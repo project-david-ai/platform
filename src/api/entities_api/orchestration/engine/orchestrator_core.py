@@ -438,125 +438,139 @@ class OrchestratorCore(
         4. If tools -> Execute tools -> Loop back to Step 1 (Recursion).
         """
 
-        # Ensure config is ready
+        # Capture original identity BEFORE stream() can perform any swap.
+        # process_conversation owns the full identity lifecycle — stream() must
+        # not restore it in its own finally block.
+        _original_assistant_id = assistant_id
+
         await self._ensure_config_loaded()
 
         tool_validator = ToolValidator()
         turn_count = 0
         current_message_id = message_id
 
-        while turn_count < max_turns:
-            turn_count += 1
-            LOG.info(f"ORCHESTRATOR ▸ Turn {turn_count} start [Run: {run_id}]")
+        try:
+            while turn_count < max_turns:
+                turn_count += 1
+                LOG.info(f"ORCHESTRATOR ▸ Turn {turn_count} start [Run: {run_id}]")
 
-            # ------------------------------------------------------------------
-            # 1. RESET INTERNAL TURN STATE
-            # ------------------------------------------------------------------
-            self.set_tool_response_state(False)
-            self.set_function_call_state(None)
-            self._current_tool_call_id = None
+                # ------------------------------------------------------------------
+                # 1. RESET INTERNAL TURN STATE
+                # ------------------------------------------------------------------
+                self.set_tool_response_state(False)
+                self.set_function_call_state(None)
+                self._current_tool_call_id = None
 
-            # ------------------------------------------------------------------
-            # 2. INFERENCE TURN (STREAM MODEL OUTPUT)
-            # ------------------------------------------------------------------
-            try:
-                async for chunk in self.stream(
+                # ------------------------------------------------------------------
+                # 2. INFERENCE TURN (STREAM MODEL OUTPUT)
+                # After this loop completes, self.assistant_id may have been swapped
+                # to the supervisor ID by _handle_deep_research_identity_swap().
+                # ------------------------------------------------------------------
+                try:
+                    async for chunk in self.stream(
+                        thread_id=thread_id,
+                        message_id=current_message_id,
+                        run_id=run_id,
+                        assistant_id=assistant_id,
+                        model=model,
+                        force_refresh=(turn_count > 1),
+                        api_key=api_key,
+                        **kwargs,
+                    ):
+                        yield chunk
+
+                except Exception as stream_exc:
+                    LOG.error(
+                        f"ORCHESTRATOR ▸ Turn {turn_count} stream failed: {stream_exc}"
+                    )
+                    yield json.dumps(
+                        {"type": "error", "content": f"Stream failure: {stream_exc}"}
+                    )
+                    break
+
+                # ------------------------------------------------------------------
+                # 3. CHECK FOR TOOLS
+                # ------------------------------------------------------------------
+                batch: List[Dict] = self.get_function_call_state()
+
+                if not batch:
+                    LOG.info(f"ORCHESTRATOR ▸ Turn {turn_count} completed with text.")
+                    break
+
+                # ------------------------------------------------------------------
+                # 4. TOOL ARGUMENT VALIDATION GATE
+                # ------------------------------------------------------------------
+                for call in batch:
+                    tool_name = call.get("name")
+                    args = call.get("arguments", {})
+
+                    validation_event = tool_validator.validate_args(
+                        tool_name=tool_name,
+                        args=args,
+                    )
+
+                    if validation_event:
+                        yield validation_event
+
+                has_consumer_tool = any(
+                    call.get("name") not in PLATFORM_TOOLS for call in batch
+                )
+
+                # ------------------------------------------------------------------
+                # 5. TOOL EXECUTION TURN
+                # self.assistant_id is read HERE — after stream() has completed its
+                # identity swap — so it correctly reflects the supervisor or worker
+                # ID rather than the original assistant ID.
+                # ------------------------------------------------------------------
+                async for chunk in self.process_tool_calls(
                     thread_id=thread_id,
-                    message_id=current_message_id,
                     run_id=run_id,
-                    assistant_id=assistant_id,
+                    assistant_id=self.assistant_id,  # ← live post-swap identity
+                    tool_call_id=self._current_tool_call_id,
                     model=model,
-                    force_refresh=(turn_count > 1),
                     api_key=api_key,
-                    **kwargs,
+                    decision=self._decision_payload,
                 ):
                     yield chunk
 
-            except Exception as stream_exc:
-                LOG.error(
-                    f"ORCHESTRATOR ▸ Turn {turn_count} stream failed: {stream_exc}"
-                )
+                # ------------------------------------------------------------------
+                # 6. RECURSION DECISION
+                # ------------------------------------------------------------------
+                if not has_consumer_tool:
+                    LOG.info(
+                        f"ORCHESTRATOR ▸ Platform batch {turn_count} complete. Looping..."
+                    )
+                    await asyncio.sleep(0.5)
+                    current_message_id = None
+                    continue
+
+                LOG.info(f"ORCHESTRATOR ▸ Consumer tool detected. Handing over to SDK.")
+                return
+
+            # ----------------------------------------------------------------------
+            # FAILSAFE — reachable only when the while condition expires naturally
+            # ----------------------------------------------------------------------
+            if turn_count >= max_turns:
+                LOG.error("ORCHESTRATOR ▸ Max turns reached.")
                 yield json.dumps(
-                    {"type": "error", "content": f"Stream failure: {stream_exc}"}
-                )
-                break
-
-            # ------------------------------------------------------------------
-            # 3. CHECK FOR TOOLS
-            # ------------------------------------------------------------------
-            # Retrieves the list of tool calls accumulated by the Mixins during stream()
-            batch: List[Dict] = self.get_function_call_state()
-
-            if not batch:
-                # No tools called = Final text response. We are done.
-                LOG.info(f"ORCHESTRATOR ▸ Turn {turn_count} completed with text.")
-                break
-
-            # ------------------------------------------------------------------
-            # 4. TOOL ARGUMENT VALIDATION GATE
-            # ------------------------------------------------------------------
-            for call in batch:
-                tool_name = call.get("name")
-                args = call.get("arguments", {})
-
-                # Validate structure of arguments before execution
-                validation_event = tool_validator.validate_args(
-                    tool_name=tool_name,
-                    args=args,
+                    {"type": "error", "content": "Maximum conversation turns exceeded"}
                 )
 
-                # FIXED: Only yield if there is an actual error/event.
-                # If validation passes, validation_event is None.
-                if validation_event:
-                    yield validation_event
-
-            # Check if we have "Consumer Tools" (External SDK tools) vs "Platform Tools" (Internal)
-            has_consumer_tool = any(
-                call.get("name") not in PLATFORM_TOOLS for call in batch
-            )
-
+        finally:
             # ------------------------------------------------------------------
-            # 5. TOOL EXECUTION TURN
+            # IDENTITY TEARDOWN
+            # Owned exclusively here so cleanup never races ahead of tool dispatch.
+            # stream() is responsible ONLY for stopping its cancellation monitor.
             # ------------------------------------------------------------------
-            # This yields the output of the tools (e.g., "Scanning code...")
-            async for chunk in self.process_tool_calls(
-                thread_id=thread_id,
-                run_id=run_id,
-                assistant_id=self.assistant_id,
-                tool_call_id=self._current_tool_call_id,
-                model=model,
-                api_key=api_key,
-                decision=self._decision_payload,
-            ):
-                yield chunk
-
-            # ----------------------------------------------------------------------------
-            # 6. RECURSION DECISION
-            # ----------------------------------------------------------------------------
-            if not has_consumer_tool:
-                # If we only ran Platform Tools (Files, Search, etc.), we recurse immediately
-                # to let the LLM see the output and formulate a response.
-                LOG.info(
-                    f"ORCHESTRATOR ▸ Platform batch {turn_count} complete. Looping..."
+            if self.ephemeral_supervisor_id:
+                await self._ephemeral_clean_up(
+                    assistant_id=self.ephemeral_supervisor_id,
+                    thread_id=thread_id,
+                    delete_thread=False,
                 )
-
-                # Small sleep to prevent tight loop race conditions in some DBs
-                await asyncio.sleep(0.5)
-
-                # Reset message_id so the provider fetches the *updated* thread history
-                current_message_id = None
-                continue
-
-            # If a Consumer Tool was called (e.g. client-side action), we stop here
-            # and let the SDK handle the rest.
-            LOG.info(f"ORCHESTRATOR ▸ Consumer tool detected. Handing over to SDK.")
-            return
-
-        # ----------------------------------------------------------------------
-        # FAILSAFE
-        # ----------------------------------------------------------------------
-        if turn_count >= max_turns:
-            LOG.error("ORCHESTRATOR ▸ Max turns reached.")
-            yield json.dumps(
-                {"type": "error", "content": "Maximum conversation turns exceeded"}
+            self.assistant_id = _original_assistant_id
+            self.ephemeral_supervisor_id = None
+            LOG.info(
+                f"ORCHESTRATOR ▸ Identity restored to {_original_assistant_id}. "
+                f"Ephemeral state cleared."
             )

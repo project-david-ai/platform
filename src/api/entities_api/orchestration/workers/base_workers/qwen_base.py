@@ -339,17 +339,3 @@ class QwenBaseWorker(
         finally:
             # 1. Stop the cancellation monitor
             stop_event.set()
-
-            # --- [FIX] Ephemeral cleanup runs FIRST ---
-            if self.ephemeral_supervisor_id:
-                await self._ephemeral_clean_up(
-                    assistant_id=self.ephemeral_supervisor_id,
-                    thread_id=thread_id,
-                    delete_thread=False,
-                )
-
-            # --- [FIX] Restore original assistant identity AFTER cleanup & persistence ---
-            self.assistant_id = _original_assistant_id
-
-            # --- [FIX] Nullify ephemeral ID ---
-            self.ephemeral_supervisor_id = None
