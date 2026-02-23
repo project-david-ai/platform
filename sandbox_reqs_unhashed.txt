@@ -10,6 +10,6 @@ websockets==15.0.1
 # transformers>=4.33.0,<5.0.0
 # ------------------------------------------------------------------ #
 # Internal packages
-projectdavid==1.54.8
+projectdavid==1.56.3
 jwt
 

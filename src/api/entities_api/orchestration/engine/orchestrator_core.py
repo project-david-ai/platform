@@ -522,7 +522,7 @@ class OrchestratorCore(
             async for chunk in self.process_tool_calls(
                 thread_id=thread_id,
                 run_id=run_id,
-                assistant_id=assistant_id,
+                assistant_id=self.assistant_id,
                 tool_call_id=self._current_tool_call_id,
                 model=model,
                 api_key=api_key,

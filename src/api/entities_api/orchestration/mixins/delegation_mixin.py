@@ -199,7 +199,8 @@ class DelegationMixin:
                 LOG.warning(f"⚠️ [CLEANUP] Thread delete failed: {e}")
         try:
             manager = AssistantManager()
-            await manager.delete_assistant(assistant_id=assistant_id, permanent=True)
+            pass
+            # await manager.delete_assistant(assistant_id=assistant_id, permanent=True)
         except Exception as e:
             LOG.error(f"❌ [CLEANUP] Assistant delete failed: {e}")
 
@@ -386,7 +387,6 @@ class DelegationMixin:
 
             async for event in self._stream_sync_generator(
                 sync_stream.stream_events,
-                provider="together-ai",
                 model=self._delegation_model,
             ):
                 # 🛑 GUARD 1: Exclude Status/System Events
