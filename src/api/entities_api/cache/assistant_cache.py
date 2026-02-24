@@ -94,6 +94,9 @@ class AssistantCache:
         research_worker_val = raw_meta.get("research_worker_calling", False)
         is_research_worker = self._normalize_bool(research_worker_val)
 
+        junior_engineer_val = raw_meta.get("junior_engineer", False)
+        is_junior_engineer = self._normalize_bool(junior_engineer_val)
+
         # 5. Construct Payload
         payload = {
             "instructions": assistant.instructions,
@@ -102,10 +105,10 @@ class AssistantCache:
             "decision_telemetry": assistant.decision_telemetry,
             "web_access": assistant.web_access,
             "deep_research": assistant.deep_research,
-            # ✅ STORE FULL METADATA
             "meta_data": raw_meta,
-            # ✅ Flattened, type-safe flag for the worker
             "is_research_worker": is_research_worker,
+            "junior_engineer": is_junior_engineer,
+            "is_engineer": assistant.engineer,
         }
 
         # 6. Save to Redis

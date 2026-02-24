@@ -15,13 +15,13 @@ from projectdavid_common.validation import StatusEnum
 
 from entities_api.cache.assistant_cache import AssistantCache
 from entities_api.clients.delta_normalizer import DeltaNormalizer
-
 # --- DEPENDENCIES ---
 from src.api.entities_api.dependencies import get_redis_sync
-from src.api.entities_api.orchestration.engine.orchestrator_core import OrchestratorCore
-
+from src.api.entities_api.orchestration.engine.orchestrator_core import \
+    OrchestratorCore
 # --- MIXINS ---
-from src.api.entities_api.orchestration.mixins.provider_mixins import _ProviderMixins
+from src.api.entities_api.orchestration.mixins.provider_mixins import \
+    _ProviderMixins
 
 load_dotenv()
 LOG = LoggingUtility()
@@ -55,6 +55,7 @@ class QwenBaseWorker(
         # ephemeral worker config
         # These objects are used for deep search
         self.is_deep_research = None
+        self.is_junior_engineer = None
         self._delete_ephemeral_thread = delete_ephemeral_thread or extra.get(
             "delete_ephemeral_thread"
         )
@@ -121,12 +122,30 @@ class QwenBaseWorker(
         **kwargs,
     ) -> AsyncGenerator[Union[str, StreamEvent], None]:
         """
-        Level 4 Deep Research Stream.
-        Utilizes DeltaNormalizer for Qwen/Kimi tag handling and helper method for state management.
+        Unified stream method supporting four distinct assistant roles:
+
+          1. SENIOR ENGINEER (Supervisor)  — deep_research=True in assistant config
+             Plans the incident, delegates to Junior Engineers, writes the Change Request.
+             No web access. No SSH. Uses update_scratchpad / read_scratchpad / delegate_engineer_task.
+
+          2. RESEARCH WORKER               — is_research_worker=True in assistant config
+             Browses the web, appends verified facts to the shared scratchpad.
+             Web access enabled. Used exclusively by the deep research workflow.
+
+          3. JUNIOR ENGINEER               — junior_engineer=True in assistant config
+             SSHs to network devices, runs delegated command sets, appends raw evidence
+             and flags to the shared scratchpad. No web access.
+
+          4. STANDARD ASSISTANT            — no role flags set
+             Normal user-facing assistant. Uses whatever is configured on the assistant record.
+
+        Role flags are set via assistant metadata at ephemeral creation time and read here
+        from the normalized assistant_config cache. Exactly one role is ever active per
+        stream invocation — the conflict resolution block enforces mutual exclusivity.
         """
-        # -----------------------------------
-        # Ephemeral supervisor
-        # -----------------------------------
+        # ------------------------------------------------------------------
+        # Ephemeral supervisor / delegation state
+        # ------------------------------------------------------------------
         self.ephemeral_supervisor_id = None
         self._scratch_pad_thread = None
         self._delegation_api_key = api_key
@@ -134,7 +153,9 @@ class QwenBaseWorker(
         stream_key = f"stream:{run_id}"
         stop_event = self.start_cancellation_monitor(run_id)
 
-        # --- [FIX] Capture original assistant_id BEFORE any identity swap ---
+        # Capture original assistant_id BEFORE any identity swap —
+        # the swap may mutate self.assistant_id to the supervisor's ID,
+        # and we need the original for cleanup / fallback.
         _original_assistant_id = assistant_id
 
         # --- 1. State Initialization ---
@@ -148,7 +169,7 @@ class QwenBaseWorker(
         pre_mapped_model = model
 
         try:
-            # --- 2. Model & Identity Setup ---
+            # --- 2. Model Resolution ---
             if hasattr(self, "_get_model_map") and (
                 mapped := self._get_model_map(model)
             ):
@@ -156,50 +177,96 @@ class QwenBaseWorker(
 
             self.assistant_id = assistant_id
 
-            # Load initial configuration for the requested assistant
+            # Load the normalized config for the requested assistant from cache.
+            # This populates self.assistant_config with metadata, flags, and settings.
             await self._ensure_config_loaded()
 
-            # Check for Deep Research / Supervisor Mode on the ORIGINAL assistant
+            # ------------------------------------------------------------------
+            # 3. ROLE FLAG EXTRACTION
+            # Read all role signals from the assistant's normalized config.
+            # These are set via meta_data at ephemeral creation time (or via the
+            # assistant record for standard assistants).
+            # ------------------------------------------------------------------
             self.is_deep_research = self.assistant_config.get("deep_research", False)
 
-            # Retrieve settings from the normalized cache
             agent_mode_setting = self.assistant_config.get("agent_mode", False)
             decision_telemetry = self.assistant_config.get("decision_telemetry", False)
 
-            # --- [CRITICAL FIX START] ---
-            # 1. Default to user preference (usually True for standard agents)
+            # Default web_access from config — may be overridden by role resolution below
             web_access_setting = self.assistant_config.get("web_access", False)
 
-            # 2. Check if this is a research worker
+            # Worker role flags — mutually exclusive, enforced below
             research_worker_setting = self.assistant_config.get(
                 "is_research_worker", False
             )
+            junior_engineer_setting = self.assistant_config.get(
+                "junior_engineer", False
+            )
 
-            # 3. CONFLICT RESOLUTION:
+            # ------------------------------------------------------------------
+            # 4. ROLE CONFLICT RESOLUTION
+            # Exactly one role is active per invocation.
+            # Priority: Senior Engineer (Supervisor) > Research Worker > Junior Engineer > Standard
+            #
+            # Each branch explicitly zeros out competing flags so that
+            # _set_up_context_window receives a single clean signal.
+            # ------------------------------------------------------------------
             if self.is_deep_research:
-                web_access_setting = False  # Supervisor creates plans, does not browse
-                research_worker_setting = False  # Supervisor is NOT a worker
+                # SENIOR ENGINEER (SUPERVISOR)
+                # Plans the incident, delegates tasks, authors the Change Request.
+                # Must NOT browse the web or SSH to devices.
+                web_access_setting = False
+                research_worker_setting = False
+                junior_engineer_setting = False
 
-            # 4. WORKER LOGIC (Only if NOT a Supervisor):
             elif research_worker_setting:
+                # RESEARCH WORKER
+                # Browses the web on behalf of the research supervisor.
+                # Must NOT be confused with the junior engineer role.
                 web_access_setting = True
+                junior_engineer_setting = False  # mutually exclusive
+
+            elif junior_engineer_setting:
+                # JUNIOR NETWORK ENGINEER
+                # SSHs to devices, runs diagnostic commands, appends evidence to scratchpad.
+                # Must NOT have web access — SSH only.
+                web_access_setting = False
+                research_worker_setting = False  # mutually exclusive
+
+            # else: STANDARD ASSISTANT — all flags remain at config defaults.
 
             LOG.critical(
-                "██████ [ROLE CONFIG] DeepResearch (Supervisor)=%s | Worker=%s | WebAccess=%s ██████",
+                "██████ [ROLE CONFIG] "
+                "SeniorEngineer(Supervisor)=%s | "
+                "ResearchWorker=%s | "
+                "JuniorEngineer=%s | "
+                "WebAccess=%s ██████",
                 self.is_deep_research,
                 research_worker_setting,
+                junior_engineer_setting,
                 web_access_setting,
             )
-            # --- [CRITICAL FIX END] ---
 
-            # C. Execute Identity Swap (Refactored)
+            # ------------------------------------------------------------------
+            # 5. IDENTITY SWAP (Supervisor role only)
+            # For the Senior Engineer / deep research supervisor, we may need to
+            # swap to an ephemeral supervisor identity. This is a no-op for all
+            # other roles — the method guards internally on self.is_deep_research.
+            # ------------------------------------------------------------------
             await self._handle_deep_research_identity_swap(
                 requested_model=pre_mapped_model
             )
 
+            # Pin the scratchpad to the current thread so that both the Senior
+            # and any spawned Junior write to the same shared pad.
             self._scratch_pad_thread = thread_id
 
-            # --- 3. Context & Client ---
+            # ------------------------------------------------------------------
+            # 6. CONTEXT WINDOW CONSTRUCTION
+            # Passes all resolved role flags into the context builder.
+            # The builder injects the correct system prompt and tool definitions
+            # based on which flag is active.
+            # ------------------------------------------------------------------
             ctx = await self._set_up_context_window(
                 assistant_id=self.assistant_id,
                 thread_id=thread_id,
@@ -210,6 +277,7 @@ class QwenBaseWorker(
                 web_access=web_access_setting,
                 deep_research=self.is_deep_research,
                 research_worker=research_worker_setting,
+                junior_engineer=junior_engineer_setting,  # ← new signal
             )
 
             if not api_key:
@@ -224,7 +292,11 @@ class QwenBaseWorker(
                 f"\nRAW_CTX_DUMP_QUEN:\n{json.dumps(ctx, indent=2, ensure_ascii=False)}"
             )
 
-            # --- 4. The Stream Loop ---
+            # ------------------------------------------------------------------
+            # 7. THE STREAM LOOP
+            # DeltaNormalizer handles Qwen/Kimi-specific tag parsing and yields
+            # normalized chunks. Accumulation is handled by _handle_chunk_accumulation.
+            # ------------------------------------------------------------------
             raw_stream = client.stream_chat_completion(
                 messages=ctx,
                 model=model,
@@ -257,18 +329,18 @@ class QwenBaseWorker(
                 yield json.dumps(chunk)
                 await self._shunt_to_redis_stream(redis, stream_key, chunk)
 
-            # Ensure any dangling XML tag is closed at the end of stream
+            # Ensure any dangling XML tag is closed cleanly at end of stream
             if current_block:
                 accumulated += f"</{current_block}>"
 
-            # =========================================================================
-            # [FIXED] POST-STREAM PROCESSING MOVED INSIDE TRY BLOCK
-            # This ensures we finalize/persist using the SUPERVISOR ID
-            # before the 'finally' block restores the Original ID.
-            # =========================================================================
+            # ------------------------------------------------------------------
+            # 8. POST-STREAM PROCESSING
+            # Kept inside the try block to ensure we finalize and persist using
+            # the correct (possibly swapped) assistant_id before the finally
+            # block has any opportunity to restore state.
+            # ------------------------------------------------------------------
 
-            # --- 5. Post-Stream: Parse Decision & Tools ---
-            # 5a. Extract Decision Payload
+            # 8a. Extract Decision Payload from buffered XML block (if any)
             if decision_buffer:
                 try:
                     self._decision_payload = json.loads(decision_buffer.strip())
@@ -277,7 +349,7 @@ class QwenBaseWorker(
                         f"Failed to parse decision buffer: {decision_buffer[:50]}..."
                     )
 
-            # 5b. Extract Tool Calls
+            # 8b. Extract Tool Calls from accumulated stream output
             tool_calls_batch = self.parse_and_set_function_calls(
                 accumulated, assistant_reply
             )
@@ -285,12 +357,15 @@ class QwenBaseWorker(
             message_to_save = assistant_reply
             final_status = StatusEnum.completed.value
 
-            # --- 6. Tool Handling & Envelope Creation ---
+            # ------------------------------------------------------------------
+            # 9. TOOL CALL ENVELOPE CONSTRUCTION
+            # If the assistant emitted tool calls, build the standardised envelope
+            # and flag the run as pending_action so the orchestrator picks it up.
+            # ------------------------------------------------------------------
             if tool_calls_batch:
                 self._tool_queue = tool_calls_batch
                 final_status = StatusEnum.pending_action.value
 
-                # Build Standardized Tool Envelope
                 tool_calls_structure = []
                 for tool in tool_calls_batch:
                     t_id = tool.get("id") or f"call_{uuid.uuid4().hex[:8]}"
@@ -305,21 +380,23 @@ class QwenBaseWorker(
                         }
                     )
 
-                # Save the STRUCTURAL representation
+                # Persist the structural representation, not the raw text
                 message_to_save = json.dumps(tool_calls_structure)
 
             yield json.dumps(
                 {"type": "status", "status": "processing", "run_id": run_id}
             )
 
-            # --- 7. Finalize & Persist ---
+            # ------------------------------------------------------------------
+            # 10. FINALIZE & PERSIST
+            # self.assistant_id is the correct ID at this point —
+            # either the original assistant or the swapped supervisor ID.
+            # ------------------------------------------------------------------
             if message_to_save:
-                # self.assistant_id is currently the Supervisor/Delegated ID (Correct)
                 await self.finalize_conversation(
                     message_to_save, thread_id, self.assistant_id, run_id
                 )
 
-            # Update Run status in DB
             if self.project_david_client:
                 await asyncio.to_thread(
                     self.project_david_client.runs.update_run_status,
@@ -337,5 +414,5 @@ class QwenBaseWorker(
             yield json.dumps({"type": "error", "content": str(exc), "run_id": run_id})
 
         finally:
-            # 1. Stop the cancellation monitor
+            # Always stop the cancellation monitor, regardless of outcome.
             stop_event.set()

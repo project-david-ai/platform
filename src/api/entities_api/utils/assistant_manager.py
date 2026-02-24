@@ -7,7 +7,11 @@ from dotenv import load_dotenv
 from projectdavid import Entity
 
 from entities_api.constants.research_worker import WORKER_TOOLS
+from src.api.entities_api.constants.junior_network_engineer import \
+    JUNIOR_ENGINEER_TOOLS
 from src.api.entities_api.constants.research_supervisor import SUPERVISOR_TOOLS
+from src.api.entities_api.constants.senior_network_engineer import \
+    SENIOR_ENGINEER_TOOLS
 
 load_dotenv()
 
@@ -60,6 +64,17 @@ class AssistantManager:
         )
         return ephemeral_worker
 
+    async def create_ephemeral_senior_engineer(self):
+
+        ephemeral_worker = await asyncio.to_thread(
+            self.client.assistants.create_assistant,
+            name=f"worker_{uuid.uuid4().hex[:8]}",
+            description="Temp research supervisor",
+            tools=SENIOR_ENGINEER_TOOLS,
+            deep_research=True,
+        )
+        return ephemeral_worker
+
     async def create_ephemeral_worker_assistant(self):
         """
         Creates the sub-worker.
@@ -94,10 +109,9 @@ class AssistantManager:
             self.client.assistants.create_assistant,
             name=f"worker_{uuid.uuid4().hex[:8]}",
             description="Temp assistant for deep research",
-            tools=[],
+            tools=JUNIOR_ENGINEER_TOOLS,
             web_access=True,
             deep_research=False,
-            # ✅ FIX: Pass state here so the worker knows what it is immediately
             meta_data={"junior_engineer": True},
         )
 

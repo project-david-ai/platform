@@ -1,14 +1,13 @@
 # src/api/entities_api/routers/the_engineer_router.py
 
 from fastapi import APIRouter, Depends, HTTPException, status
-
 # --- Schemas ---
 # Importing the schema we defined in projectdavid_common
-from projectdavid_common.schemas.device_ingest_scema import InventoryIngestRequest
+from projectdavid_common.schemas.device_ingest_scema import \
+    InventoryIngestRequest
 from projectdavid_common.utilities.logging_service import LoggingUtility
 
 from src.api.entities_api.cache.inventory_cache import InventoryCache
-
 # --- Core Dependencies ---
 from src.api.entities_api.dependencies import get_api_key, get_inventory_cache
 from src.api.entities_api.models.models import ApiKey as ApiKeyModel
