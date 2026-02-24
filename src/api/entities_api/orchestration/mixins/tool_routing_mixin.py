@@ -78,8 +78,9 @@ class ToolRoutingMixin:
         Scans text for tool call payloads.
         Level 3: Isolates planning blocks and ensures every tool in the batch has a unique ID.
         """
-        from src.api.entities_api.orchestration.mixins.json_utils_mixin import \
-            JsonUtilsMixin
+        from src.api.entities_api.orchestration.mixins.json_utils_mixin import (
+            JsonUtilsMixin,
+        )
 
         if not isinstance(self, JsonUtilsMixin):
             raise TypeError("ToolRoutingMixin must be mixed with JsonUtilsMixin")

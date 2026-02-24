@@ -9,8 +9,7 @@ from urllib.parse import urlencode
 
 from fastapi import HTTPException
 from projectdavid_common import UtilsInterface, ValidationInterface
-from projectdavid_common.constants.mime_types import (SUPPORTED_MIME_TYPES,
-                                                      get_mime_type)
+from projectdavid_common.constants.mime_types import SUPPORTED_MIME_TYPES, get_mime_type
 from projectdavid_common.utilities.logging_service import LoggingUtility
 from sqlalchemy.orm import Session
 

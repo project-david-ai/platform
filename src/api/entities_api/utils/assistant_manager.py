@@ -7,11 +7,9 @@ from dotenv import load_dotenv
 from projectdavid import Entity
 
 from entities_api.constants.research_worker import WORKER_TOOLS
-from src.api.entities_api.constants.junior_network_engineer import \
-    JUNIOR_ENGINEER_TOOLS
+from src.api.entities_api.constants.junior_network_engineer import JUNIOR_ENGINEER_TOOLS
 from src.api.entities_api.constants.research_supervisor import SUPERVISOR_TOOLS
-from src.api.entities_api.constants.senior_network_engineer import \
-    SENIOR_ENGINEER_TOOLS
+from src.api.entities_api.constants.senior_network_engineer import SENIOR_ENGINEER_TOOLS
 
 load_dotenv()
 

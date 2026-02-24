@@ -12,16 +12,24 @@ from projectdavid_common import ValidationInterface
 from projectdavid_common.utilities.logging_service import LoggingUtility
 
 from entities_api.clients.async_to_sync import async_to_sync_stream
-from entities_api.orchestration.engine.orchestrator_core import \
-    OrchestratorCore
+from entities_api.orchestration.engine.orchestrator_core import OrchestratorCore
 from src.api.entities_api.dependencies import get_redis
 from src.api.entities_api.orchestration.mixins import (
-    AssistantCacheMixin, CodeExecutionMixin, ConsumerToolHandlersMixin,
-    ConversationContextMixin, FileSearchMixin, JsonUtilsMixin,
-    PlatformToolHandlersMixin, ShellExecutionMixin, ToolRoutingMixin)
+    AssistantCacheMixin,
+    CodeExecutionMixin,
+    ConsumerToolHandlersMixin,
+    ConversationContextMixin,
+    FileSearchMixin,
+    JsonUtilsMixin,
+    PlatformToolHandlersMixin,
+    ShellExecutionMixin,
+    ToolRoutingMixin,
+)
+
 # TODO: Move this to the clients cache
-from src.api.entities_api.orchestration.workers.deepseek.deepseek_async_client import \
-    AsyncDeepSeekClient
+from src.api.entities_api.orchestration.workers.deepseek.deepseek_async_client import (
+    AsyncDeepSeekClient,
+)
 
 load_dotenv()
 LOG = LoggingUtility()

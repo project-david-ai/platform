@@ -1,9 +1,19 @@
 from entities_api.orchestration.mixins import ScratchpadMixin
 from src.api.entities_api.orchestration.mixins import (
-    AssistantCacheMixin, CodeExecutionMixin, ConsumerToolHandlersMixin,
-    ConversationContextMixin, DelegationMixin, FileSearchMixin, JsonUtilsMixin,
-    PlatformToolHandlersMixin, ServiceRegistryMixin, ShellExecutionMixin,
-    ToolRoutingMixin, WebSearchMixin)
+    AssistantCacheMixin,
+    CodeExecutionMixin,
+    ConsumerToolHandlersMixin,
+    ConversationContextMixin,
+    DelegationMixin,
+    FileSearchMixin,
+    JsonUtilsMixin,
+    PlatformToolHandlersMixin,
+    ServiceRegistryMixin,
+    ShellExecutionMixin,
+    ToolRoutingMixin,
+    WebSearchMixin,
+    NetworkInventoryMixin,
+)
 
 
 class _ProviderMixins(
@@ -20,5 +30,6 @@ class _ProviderMixins(
     WebSearchMixin,
     ScratchpadMixin,
     DelegationMixin,
+    NetworkInventoryMixin,
 ):
     """Flat bundle for Provider Mixins."""
