@@ -9,6 +9,8 @@ from src.api.entities_api.routers.api_key_router import \
     router as api_key_router
 from src.api.entities_api.routers.assistants_router import \
     router as assistants_router
+from src.api.entities_api.routers.engineering_router import \
+    router as the_engineer_router
 # Import the single router
 from src.api.entities_api.routers.files_router import router as files_router
 from src.api.entities_api.routers.inference_router import \
@@ -18,8 +20,6 @@ from src.api.entities_api.routers.messages_router import \
 from src.api.entities_api.routers.runs_router import router as runs_router
 from src.api.entities_api.routers.sandbox_auth_router import \
     router as sandbox_auth_router
-from src.api.entities_api.routers.the_engineer_router import \
-    router as the_engineer_router
 from src.api.entities_api.routers.threads_router import \
     router as threads_router
 from src.api.entities_api.routers.tools_router import router as tools_router
