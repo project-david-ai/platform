@@ -6,9 +6,7 @@ from projectdavid import Entity
 
 # Import your AsyncHyperbolicClient definition
 from entities_api.clients.unified_async_client import (
-    _ACTIVE_CLIENTS,
-    AsyncUnifiedInferenceClient,
-)
+    _ACTIVE_CLIENTS, AsyncUnifiedInferenceClient)
 from src.api.entities_api.services.logging_service import LoggingUtility
 
 load_dotenv()

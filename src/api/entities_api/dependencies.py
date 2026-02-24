@@ -15,11 +15,9 @@ from entities_api.cache.message_cache import MessageCache
 from entities_api.cache.scratchpad_cache import ScratchpadCache
 from entities_api.cache.web_cache import WebSessionCache
 from entities_api.services.inventory_service import InventoryService  # ✅ ADDED
-
 # --- SERVICE IMPORTS ---
 from entities_api.services.scratchpad_service import ScratchpadService
 from entities_api.services.web_reader import UniversalWebReader
-
 # --- DB & MODEL IMPORTS ---
 from src.api.entities_api.db.database import get_db
 from src.api.entities_api.models.models import ApiKey, User

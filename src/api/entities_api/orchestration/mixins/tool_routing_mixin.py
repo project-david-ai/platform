@@ -78,9 +78,8 @@ class ToolRoutingMixin:
         Scans text for tool call payloads.
         Level 3: Isolates planning blocks and ensures every tool in the batch has a unique ID.
         """
-        from src.api.entities_api.orchestration.mixins.json_utils_mixin import (
-            JsonUtilsMixin,
-        )
+        from src.api.entities_api.orchestration.mixins.json_utils_mixin import \
+            JsonUtilsMixin
 
         if not isinstance(self, JsonUtilsMixin):
             raise TypeError("ToolRoutingMixin must be mixed with JsonUtilsMixin")
@@ -261,10 +260,21 @@ class ToolRoutingMixin:
                     yield chunk
 
             # ---------------------------------------------------------
-            # ✅ DEEP RESEARCH / MEMORY TOOLS
+            # ✅ DELEGATION / DEEP RESEARCH / MEMORY TOOLS
             # ---------------------------------------------------------
             elif name == "delegate_research_task":
                 async for chunk in self.handle_delegate_research_task(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                ):
+                    yield chunk
+
+            elif name == "delegate_engineer_task":
+                async for chunk in self.handle_delegate_engineer_task(
                     thread_id=thread_id,
                     run_id=run_id,
                     assistant_id=assistant_id,
@@ -298,6 +308,31 @@ class ToolRoutingMixin:
 
             elif name == "append_scratchpad":
                 async for chunk in self.handle_append_scratchpad(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                ):
+                    yield chunk
+
+            # ---------------------------------------------------------
+            # ✅ NETWORK INVENTORY TOOLS
+            # ---------------------------------------------------------
+            elif name == "search_inventory_by_group":
+                async for chunk in self.handle_search_inventory_by_group(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                ):
+                    yield chunk
+
+            elif name == "get_device_info":
+                async for chunk in self.handle_get_device_info(
                     thread_id=thread_id,
                     run_id=run_id,
                     assistant_id=assistant_id,

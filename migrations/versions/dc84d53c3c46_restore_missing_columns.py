@@ -12,13 +12,11 @@ from alembic import op
 
 # --- Try to import your DDL safety helpers; fall back to local shims ---
 try:
-    from migrations.utils.safe_ddl import (
-        add_column_if_missing,
-        column_exists,
-        drop_column_if_exists,
-        rename_column_if_exists,
-        safe_alter_column,
-    )
+    from migrations.utils.safe_ddl import (add_column_if_missing,
+                                           column_exists,
+                                           drop_column_if_exists,
+                                           rename_column_if_exists,
+                                           safe_alter_column)
 except Exception:
 
     def _insp():

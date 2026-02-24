@@ -14,17 +14,6 @@ LOG = LoggingUtility()
 def _status(run_id: str, tool: str, message: str, status: str = "running") -> str:
     """
     Emit a status event as raw JSON conforming to the stream EVENT_CONTRACT.
-
-    Shape:
-        {
-            "type":    "engineer_status",
-            "run_id":  "<uuid>",
-            "tool":    "<tool_name>",
-            "status":  "running" | "success" | "error" | "warning",
-            "message": "<human readable>"
-        }
-
-    The SDK deserializes and routes this.
     """
     return json.dumps(
         {
@@ -40,11 +29,6 @@ def _status(run_id: str, tool: str, message: str, status: str = "running") -> st
 class NetworkInventoryMixin:
     """
     Drives the **Agentic Network Engineering Tools** (Inventory Search, Device Lookups).
-
-    Features:
-    - Secure, isolated queries to the network inventory cache.
-    - Standardized event emissions mirroring the WebSearchMixin.
-    - Resilient error handling and validation logic.
     """
 
     # ------------------------------------------------------------------
@@ -87,7 +71,7 @@ class NetworkInventoryMixin:
     async def _execute_engineer_tool_logic(
         self,
         tool_name: str,
-        required_keys: list[str],
+        required_schema: Dict[str, Any],  # FIXED: Changed from list[str] to Dict map
         thread_id: str,
         run_id: str,
         assistant_id: str,
@@ -105,7 +89,7 @@ class NetworkInventoryMixin:
 
         # --- VALIDATION ---
         validator = ToolValidator()
-        validator.schema_registry = {tool_name: required_keys}
+        validator.schema_registry = {tool_name: required_schema}
         validation_error = validator.validate_args(tool_name, arguments_dict)
 
         if validation_error:
@@ -304,7 +288,7 @@ class NetworkInventoryMixin:
         """Handler for 'search_inventory_by_group'."""
         async for event in self._execute_engineer_tool_logic(
             tool_name="search_inventory_by_group",
-            required_keys=["group"],
+            required_schema={"group": str},  # FIXED
             thread_id=thread_id,
             run_id=run_id,
             assistant_id=assistant_id,
@@ -326,7 +310,7 @@ class NetworkInventoryMixin:
         """Handler for 'get_device_info'."""
         async for event in self._execute_engineer_tool_logic(
             tool_name="get_device_info",
-            required_keys=["hostname"],
+            required_schema={"hostname": str},  # FIXED
             thread_id=thread_id,
             run_id=run_id,
             assistant_id=assistant_id,

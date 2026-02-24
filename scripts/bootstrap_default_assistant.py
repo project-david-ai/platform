@@ -12,11 +12,13 @@ import sys
 try:
     from projectdavid import Entity
     from projectdavid_common import ValidationInterface
-    from projectdavid_common.constants.assistant_map import PLATFORM_ASSISTANT_ID_MAP
+    from projectdavid_common.constants.assistant_map import \
+        PLATFORM_ASSISTANT_ID_MAP
     from projectdavid_common.constants.tools import TOOLS_ID_MAP
 
     from entities_api.constants.assistant import BASE_TOOLS, DEFAULT_MODEL
-    from entities_api.orchestration.instructions.assembler import assemble_instructions
+    from entities_api.orchestration.instructions.assembler import \
+        assemble_instructions
     from entities_api.platform_tools.definitions import assemble_tools
     from entities_api.services.logging_service import LoggingUtility
 except ImportError as e:
