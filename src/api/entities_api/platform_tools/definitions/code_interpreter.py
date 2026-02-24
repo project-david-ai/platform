@@ -22,7 +22,7 @@ code_interpreter = {
             "   `import os; print(os.path.exists('/app/generated_files/my_file.docx'))`\n"
             "   If verification prints `False`, the file was not saved — correct and retry.\n\n"
             "### 4. IMPORTS\n"
-            "   - Word deprecated_docs : `from docx import Document`  (package: python-docx)\n"
+            "   - Word docs : `from docx import Document`  (package: python-docx)\n"
             "   - Excel     : `import openpyxl` or `import pandas as pd`\n"
             "   - Plotting  : `import matplotlib.pyplot as plt`\n\n"
             "### 5. NO INTERACTIVE INPUT\n"

@@ -37,7 +37,7 @@ def _status(run_id: str, tool: str, message: str, status: str = "running") -> st
     )
 
 
-class NetworkEngineerMixin:
+class NetworkInventoryMixin:
     """
     Drives the **Agentic Network Engineering Tools** (Inventory Search, Device Lookups).
 

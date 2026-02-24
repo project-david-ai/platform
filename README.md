@@ -35,7 +35,7 @@ The **Entities API** is for developing projects that interact with LLMs.
 It aggregates inference calls to multiple providers as well as local using the [Ollama](https://github.com/ollama) library.
 
 This enables rapid and flexible deployment of advanced features such as conversation management,  
-[function calling](/deprecated_docs/function_calling.md), [code interpretation](/deprecated_docs/code_interpretation.md), and more through easy-to-use API endpoints.
+[function calling](/docs/function_calling.md), [code interpretation](/docs/code_interpretation.md), and more through easy-to-use API endpoints.
 
 
 ###  Universal Tool Use.  
@@ -43,7 +43,7 @@ Tool calling works the same across all models, all vendors, and all threads.
 We’re not shouting about it. It just works.
 
 This enables rapid and flexible deployment of advanced features such as conversation management,  
-[function calling](/deprecated_docs/function_calling.md), [code interpretation](/deprecated_docs/code_interpretation.md), and more through easy-to-use API endpoints.
+[function calling](/docs/function_calling.md), [code interpretation](/docs/code_interpretation.md), and more through easy-to-use API endpoints.
 
 ###  Tools
 
@@ -316,7 +316,7 @@ Entities places security at the forefront, employing:
 
 ##   State Management
 
-Entities simplifies dialogue management with the [Threads](/deprecated_docs/threads.md) endpoint.
+Entities simplifies dialogue management with the [Threads](/docs/threads.md) endpoint.
 
 ```json
 [
@@ -347,14 +347,14 @@ Entities simplifies dialogue management with the [Threads](/deprecated_docs/thre
 
 ### Internals
 
-- [Routes](/deprecated_docs/routes.md)  
-- [Security](/deprecated_docs/security.md)  
-- [Integration Status](/deprecated_docs/model_integration_status.md)  
-- [Files](/deprecated_docs/files.md)  
+- [Routes](/docs/routes.md)  
+- [Security](/docs/security.md)  
+- [Integration Status](/docs/model_integration_status.md)  
+- [Files](/docs/files.md)  
 - [Vector Store](https://github.com/frankie336/projectdavid/blob/master/docs/vector_store.md)  
-- [Database](/deprecated_docs/database.md)  
+- [Database](/docs/database.md)  
 - [Tools](https://github.com/frankie336/projectdavid/blob/master/docs/tools.md)  
-- [Users](/deprecated_docs/users.md)
+- [Users](/docs/users.md)
 
 ### Advanced Features
 

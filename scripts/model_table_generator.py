@@ -68,12 +68,12 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Resolve the deprecated_docs folder relative to this file
+    # Resolve the docs folder relative to this file
     script_path = Path(__file__).resolve()
     project_root = script_path.parent.parent
-    docs_dir = project_root / "deprecated_docs"
+    docs_dir = project_root / "docs"
 
-    # Make sure the deprecated_docs folder exists
+    # Make sure the docs folder exists
     docs_dir.mkdir(parents=True, exist_ok=True)
 
     output_name = args.output_file

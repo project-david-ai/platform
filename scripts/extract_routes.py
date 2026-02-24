@@ -89,7 +89,7 @@ def main():
     print(tabulate(routes, headers=headers, tablefmt="fancy_grid", stralign="left"))
 
     # Save Markdown version
-    markdown_output_path = os.path.join(project_root, "deprecated_docs", "routes.md")
+    markdown_output_path = os.path.join(project_root, "docs", "routes.md")
     os.makedirs(os.path.dirname(markdown_output_path), exist_ok=True)
     save_markdown_table(routes, headers, markdown_output_path)
 
