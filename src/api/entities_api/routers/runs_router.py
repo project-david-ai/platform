@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 from starlette import status
 
-from src.api.entities_api.db.database import \
-    SessionLocal  # Needed for the fixed SSE endpoint
+from src.api.entities_api.db.database import (
+    SessionLocal,
+)  # Needed for the fixed SSE endpoint
+
 # The `get_db` dependency is now only needed for the admin check.
 from src.api.entities_api.dependencies import get_api_key, get_db
 from src.api.entities_api.models.models import ApiKey as ApiKeyModel

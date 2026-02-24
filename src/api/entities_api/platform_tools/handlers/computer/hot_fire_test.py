@@ -1,5 +1,6 @@
-from entities_api.platform_tools.handlers.computer.shell_command_interface import \
-    run_shell_commands
+from entities_api.platform_tools.handlers.computer.shell_command_interface import (
+    run_shell_commands,
+)
 
 commands_list = ["telnet host.docker.internal 9001"]
 result = run_shell_commands(
