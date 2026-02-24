@@ -434,7 +434,16 @@ class Assistant(Base):
         default=False,
         server_default="0",
         nullable=False,
-        comment="Enable live web search and browsing capabilities.",
+        comment="Enable deep research capabilities.",
+    )
+
+    # NEW: Engineering Mode Toggle
+    engineer = Column(
+        Boolean,
+        default=False,
+        server_default="0",
+        nullable=False,
+        comment="Enable network engineering capabilities and inventory map access.",
     )
 
     decision_telemetry = Column(
@@ -455,7 +464,7 @@ class Assistant(Base):
 
     # --- Relationships ---
     users = relationship(
-        "User", secondary=user_assistants, back_populates="assistants", lazy="select"
+        "User", secondary="user_assistants", back_populates="assistants", lazy="select"
     )
     vector_stores = relationship(
         "VectorStore",
