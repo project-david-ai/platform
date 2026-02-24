@@ -9,7 +9,10 @@ from projectdavid import Entity
 # ------------------------------------------------------------------
 load_dotenv()
 
+# =============================================
 # Initialize the main entry point
+#
+# ===============================================
 client = Entity(
     base_url=os.getenv(
         "BASE_URL", "http://localhost:9000/v1"

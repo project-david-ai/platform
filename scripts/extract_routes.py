@@ -10,6 +10,34 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+# =================================================================
+# FIX: Load environment variables before importing FastAPI routers
+# =================================================================
+try:
+    from dotenv import load_dotenv
+
+    env_path = os.path.join(project_root, ".env")
+
+    # Load the .env file
+    if os.path.exists(env_path):
+        load_dotenv(dotenv_path=env_path)
+        print(f"⚙️ Loaded environment variables from: {env_path}")
+    else:
+        print(f"⚠️ Warning: No .env file found at {env_path}")
+except ImportError:
+    print("⚠️ python-dotenv is not installed. Run: pip install python-dotenv")
+
+# Fallback: If the DB connection string is STILL empty, inject a dummy one.
+# (Note: Change 'DATABASE_URL' if your database.py expects a different name like 'DB_URL')
+db_var_names = ["DATABASE_URL", "DB_URL", "SQLALCHEMY_DATABASE_URI"]
+if not any(os.environ.get(var) for var in db_var_names):
+    print(
+        "⚠️ No Database URL found in environment. Injecting dummy SQLite URL to prevent crash."
+    )
+    for var in db_var_names:
+        os.environ[var] = "sqlite:///:memory:"
+# =================================================================
+
 try:
     from fastapi.routing import APIRoute
 

@@ -15,7 +15,7 @@ from config_orc_fc import config
 from dotenv import load_dotenv
 # Import the project classes
 from projectdavid import (ContentEvent, DecisionEvent, Entity, ReasoningEvent,
-                          StatusEvent, ToolCallRequestEvent)
+                          ToolCallRequestEvent, WebStatusEvent)
 
 # ------------------------------------------------------------------
 # 0. CONFIGURATION & SDK INIT
@@ -121,7 +121,7 @@ last_tick = time.perf_counter()
 
 try:
     # This ONE loop now handles Turn 1 (Tool Call) AND Turn 2 (Answer)
-    for event in stream.stream_events(provider=PROVIDER_KW, model=MODEL_ID):
+    for event in stream.stream_events(model=MODEL_ID):
 
         # Timing logic
         current_tick = time.perf_counter()
