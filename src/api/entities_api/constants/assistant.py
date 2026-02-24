@@ -12,6 +12,8 @@ PLATFORM_TOOLS = [
     "read_scratchpad",
     "update_scratchpad",
     "append_scratchpad",
+    "get_device_info",
+    "search_inventory_by_group",
 ]
 
 
