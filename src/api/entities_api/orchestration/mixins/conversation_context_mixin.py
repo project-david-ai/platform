@@ -8,20 +8,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from projectdavid import Entity
 
 from entities_api.constants.tools import PLATFORM_TOOL_MAP
-from entities_api.orchestration.instructions.assembler import assemble_instructions
+from entities_api.orchestration.instructions.assembler import \
+    assemble_instructions
 from src.api.entities_api.orchestration.instructions.include_lists import (
-    L2_INSTRUCTIONS,
-    L3_INSTRUCTIONS,
-    L3_WEB_USE_INSTRUCTIONS,
-    L4_JUNIOR_ENGINEER_INSTRUCTIONS,
-    L4_RESEARCH_INSTRUCTIONS,
-    L4_SENIOR_ENGINEER_INSTRUCTIONS,
-    LEVEL_4_SUPERVISOR_INSTRUCTIONS,
-    NO_CORE_INSTRUCTIONS,
-)
-from src.api.entities_api.platform_tools.definitions.record_tool_decision import (
-    record_tool_decision,
-)
+    L2_INSTRUCTIONS, L3_INSTRUCTIONS, L3_WEB_USE_INSTRUCTIONS,
+    L4_JUNIOR_ENGINEER_INSTRUCTIONS, L4_RESEARCH_INSTRUCTIONS,
+    L4_SENIOR_ENGINEER_INSTRUCTIONS, LEVEL_4_SUPERVISOR_INSTRUCTIONS,
+    NO_CORE_INSTRUCTIONS)
+from src.api.entities_api.platform_tools.definitions.record_tool_decision import \
+    record_tool_decision
 from src.api.entities_api.services.logging_service import LoggingUtility
 
 LOG = LoggingUtility()
@@ -33,7 +28,8 @@ class ConversationContextMixin:
     @property
     def message_cache(self):
         if not self._message_cache:
-            from src.api.entities_api.cache.message_cache import get_sync_message_cache
+            from src.api.entities_api.cache.message_cache import \
+                get_sync_message_cache
 
             self._message_cache = get_sync_message_cache()
         return self._message_cache

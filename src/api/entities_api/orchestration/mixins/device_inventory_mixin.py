@@ -68,7 +68,6 @@ class NetworkInventoryMixin:
     # ------------------------------------------------------------------
     # 2. CORE EXECUTION LOGIC (The Engine)
     # ------------------------------------------------------------------
-
     async def _execute_engineer_tool_logic(
         self,
         tool_name: str,
@@ -143,8 +142,7 @@ class NetworkInventoryMixin:
 
                 res = await asyncio.to_thread(
                     self.project_david_client.engineer.search_inventory_by_group,
-                    assistant_id=assistant_id,
-                    group=group,
+                    group=group,  # REMOVED assistant_id
                 )
 
             elif tool_name == "get_device_info":
@@ -155,8 +153,7 @@ class NetworkInventoryMixin:
 
                 res = await asyncio.to_thread(
                     self.project_david_client.engineer.get_device_info,
-                    assistant_id=assistant_id,
-                    hostname=hostname,
+                    hostname=hostname,  # REMOVED assistant_id
                 )
             else:
                 raise ValueError(f"Unknown engineer tool: {tool_name}")
@@ -234,7 +231,6 @@ class NetworkInventoryMixin:
     # ------------------------------------------------------------------
     # 3. PUBLIC HANDLERS
     # ------------------------------------------------------------------
-
     async def handle_search_inventory_by_group(
         self,
         thread_id: str,
