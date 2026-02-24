@@ -5,6 +5,7 @@ from sqlalchemy import text
 # DB
 from src.api.entities_api.db.database import engine, wait_for_databases
 from src.api.entities_api.models.models import Base
+
 # 🔭 Observability
 from src.api.entities_api.observability.tracing import setup_tracing
 from src.api.entities_api.routers import api_router

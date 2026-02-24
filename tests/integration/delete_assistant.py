@@ -5,8 +5,7 @@ import os
 from dotenv import load_dotenv
 from projectdavid import Entity
 
-from entities_api.orchestration.instructions.assembler import \
-    assemble_instructions
+from entities_api.orchestration.instructions.assembler import assemble_instructions
 
 # ------------------------------------------------------------------
 # 0.  SDK init + env

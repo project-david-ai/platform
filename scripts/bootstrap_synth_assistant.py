@@ -5,11 +5,9 @@ import sys
 try:
     from projectdavid import Entity
     from projectdavid_common import ValidationInterface
-    from projectdavid_common.constants.assistant_map import \
-        PLATFORM_ASSISTANT_ID_MAP
+    from projectdavid_common.constants.assistant_map import PLATFORM_ASSISTANT_ID_MAP
 
-    from entities_api.orchestration.instructions.synthesis import \
-        assemble_instructions
+    from entities_api.orchestration.instructions.synthesis import assemble_instructions
     from entities_api.services.logging_service import LoggingUtility
 except ImportError as e:
     print(f"Error importing required modules: {e}")

@@ -11,6 +11,7 @@ from projectdavid_common.validation import StatusEnum
 from sqlalchemy.orm import Session
 
 from src.api.entities_api.db.database import SessionLocal
+
 # FIX: Import Assistant to resolve tool_configs
 from src.api.entities_api.models.models import Assistant, Run
 

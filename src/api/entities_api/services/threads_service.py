@@ -8,6 +8,7 @@ from projectdavid_common.utilities.logging_service import LoggingUtility
 from sqlalchemy.orm import Session
 
 from entities_api.utils.cache_utils import get_sync_message_cache
+
 # Import the SessionLocal factory from your central database file.
 # NOTE: Ensure this import path is correct for your project structure.
 from src.api.entities_api.db.database import SessionLocal
