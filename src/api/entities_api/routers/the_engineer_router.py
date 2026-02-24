@@ -1,59 +1,71 @@
-import logging
-from typing import Dict, List, Optional
+# src/api/entities_api/routers/the_engineer_router.py
 
+from fastapi import APIRouter, Depends, HTTPException, status
+# --- Schemas ---
+# Importing the schema we defined in projectdavid_common
+from projectdavid_common.schemas.device_ingest_scema import \
+    InventoryIngestRequest
 from projectdavid_common.utilities.logging_service import LoggingUtility
 
-from entities_api.cache.inventory_cache import InventoryCache
+from src.api.entities_api.cache.inventory_cache import InventoryCache
+# --- Core Dependencies ---
+from src.api.entities_api.dependencies import get_api_key, get_inventory_cache
+from src.api.entities_api.models.models import ApiKey as ApiKeyModel
 
-# FIX APPLIED: Added parenthesis to instantiate the logger
-logger = LoggingUtility()
+# --- Router Setup ---
+router = APIRouter()
+logging_utility = LoggingUtility()
 
 
-class InventoryService:
-    def __init__(self, inventory_cache: InventoryCache):
-        self.cache = inventory_cache
+@router.post(
+    "/engineer/inventory/ingest",
+    summary="Upload Network Map (The Engineer's Eyes)",
+    status_code=status.HTTP_200_OK,
+)
+async def ingest_network_inventory(
+    payload: InventoryIngestRequest,
+    cache: InventoryCache = Depends(get_inventory_cache),
+    auth_key: ApiKeyModel = Depends(get_api_key),
+):
+    """
+    **The Engineer's Ingestion Point.**
 
-    async def ingest_inventory(
-        self, user_id: str, assistant_id: str, devices: List[Dict]
-    ) -> int:
-        if not devices:
-            return 0
+    The SDK (running securely in the customer's network) pushes the device inventory here.
+    This creates the "Mental Map" for the Assistant.
 
-        valid_devices = []
-        for dev in devices:
-            if "host_name" not in dev:
-                logger.warning(
-                    f"Skipped a device missing 'host_name' during ingestion for User {user_id}, Assistant {assistant_id}"
-                )
-                continue
-            valid_devices.append(dev)
-
-        if not valid_devices:
-            return 0
-
-        logger.info(
-            f"Ingesting {len(valid_devices)} valid devices for User {user_id}, Assistant {assistant_id}"
+    - **Scope:** Data is isolated by `assistant_id` (Tenant).
+    - **Security:** No passwords are sent here. Only metadata (IP, Hostname, Platform).
+    - **Outcome:** The Assistant can now 'see' these network_device_commands to plan actions.
+    """
+    try:
+        logging_utility.info(
+            f"The Engineer: Ingesting inventory for Assistant '{payload.assistant_id}' "
+            f"via User ID {auth_key.user_id}"
         )
-        return await self.cache.ingest_inventory(user_id, assistant_id, valid_devices)
 
-    async def search_by_group(
-        self, user_id: str, assistant_id: str, group: str
-    ) -> List[Dict]:
-        if not group:
-            return []
+        # 1. Convert Pydantic models to standard dicts for Redis
+        # (Redis cache expects a list of dicts, not Pydantic objects)
+        device_dicts = [device.dict() for device in payload.devices]
 
-        logger.debug(
-            f"Searching inventory for group '{group}' (User: {user_id}, Assistant: {assistant_id})"
+        # 2. Ingest into the Assistant-Specific Scope
+        # FIX APPLIED: Added user_id
+        count = await cache.ingest_inventory(
+            user_id=auth_key.user_id,
+            assistant_id=payload.assistant_id,
+            devices=device_dicts,
         )
-        return await self.cache.search_by_group(user_id, assistant_id, group)
 
-    async def get_device(
-        self, user_id: str, assistant_id: str, hostname: str
-    ) -> Optional[Dict]:
-        if not hostname:
-            return None
+        return {
+            "status": "success",
+            "assistant_id": payload.assistant_id,
+            "devices_ingested": count,
+            "message": "The Engineer's mental map has been updated.",
+        }
 
-        logger.debug(
-            f"Fetching device '{hostname}' (User: {user_id}, Assistant: {assistant_id})"
+    except Exception as e:
+        # FIX APPLIED: Added exc_info=True to print tracebacks on future errors
+        logging_utility.error(f"The Engineer Ingestion Failed: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to ingest inventory: {str(e)}",
         )
-        return await self.cache.get_device(user_id, assistant_id, hostname)
