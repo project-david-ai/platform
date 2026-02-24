@@ -1,4 +1,4 @@
-PLATFORM_TOOLS = [
+delegate_engineer_task = [
     "code_interpreter",
     "web_search",
     "search_web_page",
@@ -8,6 +8,7 @@ PLATFORM_TOOLS = [
     "vector_store_search",
     "computer",
     "delegate_research_task",
+    "delegate_engineer_task",
     "read_scratchpad",
     "update_scratchpad",
     "append_scratchpad",
