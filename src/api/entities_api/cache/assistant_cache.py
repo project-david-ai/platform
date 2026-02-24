@@ -90,25 +90,29 @@ class AssistantCache:
         # We need the full dict so the worker can do: config.get("meta_data").get("key")
         raw_meta = getattr(assistant, "meta_data", {}) or {}
 
-        # Safe extraction of the research worker flag (handling strings vs bools)
+        # Safe extraction of the ephemeral worker flags (handling strings vs bools)
         research_worker_val = raw_meta.get("research_worker_calling", False)
         is_research_worker = self._normalize_bool(research_worker_val)
 
-        junior_engineer_val = raw_meta.get("junior_engineer", False)
+        junior_engineer_val = raw_meta.get("junior_engineer_calling", False)
         is_junior_engineer = self._normalize_bool(junior_engineer_val)
 
         # 5. Construct Payload
         payload = {
             "instructions": assistant.instructions,
             "tools": clean_tools,
-            "agent_mode": assistant.agent_mode,
-            "decision_telemetry": assistant.decision_telemetry,
-            "web_access": assistant.web_access,
-            "deep_research": assistant.deep_research,
+            "agent_mode": getattr(assistant, "agent_mode", False),
+            "decision_telemetry": getattr(assistant, "decision_telemetry", False),
+            "web_access": getattr(assistant, "web_access", False),
+            "deep_research": getattr(assistant, "deep_research", False),
+            "is_engineer": getattr(
+                assistant, "engineer", False
+            ),  # Ensure it doesn't crash if SDK isn't updated
+            # ✅ STORE FULL METADATA
             "meta_data": raw_meta,
+            # ✅ Flattened, type-safe flags for the worker
             "is_research_worker": is_research_worker,
             "junior_engineer": is_junior_engineer,
-            "is_engineer": assistant.engineer,
         }
 
         # 6. Save to Redis

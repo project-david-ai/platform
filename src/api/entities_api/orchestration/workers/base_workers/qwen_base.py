@@ -53,15 +53,16 @@ class QwenBaseWorker(
         # 1. Config & Dependencies
         self.api_key = api_key or extra.get("api_key")
         # ephemeral worker config
-        # These objects are used for deep search
+        # These objects are used for deep search and engineering flows
         self.is_deep_research = None
-        self.is_junior_engineer = None
+        self.is_engineer = None
         self._delete_ephemeral_thread = delete_ephemeral_thread or extra.get(
             "delete_ephemeral_thread"
         )
         self.ephemeral_supervisor_id = None
         self._delegation_api_key = self.api_key
         self._research_worker_thread = None
+        self._worker_thread = None
 
         self.redis = redis or get_redis_sync()
 
@@ -124,19 +125,22 @@ class QwenBaseWorker(
         """
         Unified stream method supporting four distinct assistant roles:
 
-          1. SENIOR ENGINEER (Supervisor)  — deep_research=True in assistant config
+          1. SENIOR ENGINEER (Supervisor)  — is_engineer=True in assistant config
              Plans the incident, delegates to Junior Engineers, writes the Change Request.
              No web access. No SSH. Uses update_scratchpad / read_scratchpad / delegate_engineer_task.
 
-          2. RESEARCH WORKER               — is_research_worker=True in assistant config
+          2. RESEARCH SUPERVISOR           — deep_research=True in assistant config
+             Plans the research, delegates to Research Workers. No web access.
+
+          3. RESEARCH WORKER               — is_research_worker=True in assistant config
              Browses the web, appends verified facts to the shared scratchpad.
              Web access enabled. Used exclusively by the deep research workflow.
 
-          3. JUNIOR ENGINEER               — junior_engineer=True in assistant config
+          4. JUNIOR ENGINEER               — junior_engineer=True in assistant config
              SSHs to network devices, runs delegated command sets, appends raw evidence
              and flags to the shared scratchpad. No web access.
 
-          4. STANDARD ASSISTANT            — no role flags set
+          5. STANDARD ASSISTANT            — no role flags set
              Normal user-facing assistant. Uses whatever is configured on the assistant record.
 
         Role flags are set via assistant metadata at ephemeral creation time and read here
@@ -188,6 +192,7 @@ class QwenBaseWorker(
             # assistant record for standard assistants).
             # ------------------------------------------------------------------
             self.is_deep_research = self.assistant_config.get("deep_research", False)
+            self.is_engineer = self.assistant_config.get("is_engineer", False)
 
             agent_mode_setting = self.assistant_config.get("agent_mode", False)
             decision_telemetry = self.assistant_config.get("decision_telemetry", False)
@@ -199,22 +204,30 @@ class QwenBaseWorker(
             research_worker_setting = self.assistant_config.get(
                 "is_research_worker", False
             )
-            junior_engineer_setting = self.assistant_config.get(
-                "junior_engineer", False
+
+            # Extract from meta_data for dynamic ephemeral flags
+            raw_meta = self.assistant_config.get("meta_data", {})
+            junior_engineer_setting = (
+                str(raw_meta.get("junior_engineer_calling", False)).lower() == "true"
             )
 
             # ------------------------------------------------------------------
             # 4. ROLE CONFLICT RESOLUTION
             # Exactly one role is active per invocation.
-            # Priority: Senior Engineer (Supervisor) > Research Worker > Junior Engineer > Standard
-            #
-            # Each branch explicitly zeros out competing flags so that
-            # _set_up_context_window receives a single clean signal.
+            # Priority: Senior Engineer > Research Supervisor > Research Worker > Junior Engineer > Standard
             # ------------------------------------------------------------------
-            if self.is_deep_research:
+            if self.is_engineer:
                 # SENIOR ENGINEER (SUPERVISOR)
                 # Plans the incident, delegates tasks, authors the Change Request.
                 # Must NOT browse the web or SSH to devices.
+                web_access_setting = False
+                research_worker_setting = False
+                junior_engineer_setting = False
+                self.is_deep_research = False
+
+            elif self.is_deep_research:
+                # RESEARCH SUPERVISOR
+                # Plans research, delegates tasks.
                 web_access_setting = False
                 research_worker_setting = False
                 junior_engineer_setting = False
@@ -222,25 +235,25 @@ class QwenBaseWorker(
             elif research_worker_setting:
                 # RESEARCH WORKER
                 # Browses the web on behalf of the research supervisor.
-                # Must NOT be confused with the junior engineer role.
                 web_access_setting = True
-                junior_engineer_setting = False  # mutually exclusive
+                junior_engineer_setting = False
 
             elif junior_engineer_setting:
                 # JUNIOR NETWORK ENGINEER
                 # SSHs to devices, runs diagnostic commands, appends evidence to scratchpad.
-                # Must NOT have web access — SSH only.
                 web_access_setting = False
-                research_worker_setting = False  # mutually exclusive
+                research_worker_setting = False
 
             # else: STANDARD ASSISTANT — all flags remain at config defaults.
 
             LOG.critical(
                 "██████ [ROLE CONFIG] "
-                "SeniorEngineer(Supervisor)=%s | "
+                "SeniorEngineer=%s | "
+                "DeepResearch=%s | "
                 "ResearchWorker=%s | "
                 "JuniorEngineer=%s | "
                 "WebAccess=%s ██████",
+                self.is_engineer,
                 self.is_deep_research,
                 research_worker_setting,
                 junior_engineer_setting,
@@ -248,12 +261,10 @@ class QwenBaseWorker(
             )
 
             # ------------------------------------------------------------------
-            # 5. IDENTITY SWAP (Supervisor role only)
-            # For the Senior Engineer / deep research supervisor, we may need to
-            # swap to an ephemeral supervisor identity. This is a no-op for all
-            # other roles — the method guards internally on self.is_deep_research.
+            # 5. IDENTITY SWAP (Supervisor roles only)
+            # Delegates to parent class Orchestrator method. A no-op for workers.
             # ------------------------------------------------------------------
-            await self._handle_deep_research_identity_swap(
+            await self._handle_role_based_identity_swap(
                 requested_model=pre_mapped_model
             )
 
@@ -276,6 +287,7 @@ class QwenBaseWorker(
                 decision_telemetry=decision_telemetry,
                 web_access=web_access_setting,
                 deep_research=self.is_deep_research,
+                engineer=self.is_engineer,  # ← new signal
                 research_worker=research_worker_setting,
                 junior_engineer=junior_engineer_setting,  # ← new signal
             )
@@ -416,3 +428,7 @@ class QwenBaseWorker(
         finally:
             # Always stop the cancellation monitor, regardless of outcome.
             stop_event.set()
+
+            # RESTORE ORIGINAL ID
+            # Prevents state leaking on subsequent requests running on the same instance
+            self.assistant_id = _original_assistant_id

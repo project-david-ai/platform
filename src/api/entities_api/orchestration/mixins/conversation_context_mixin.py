@@ -12,7 +12,8 @@ from entities_api.orchestration.instructions.assembler import \
     assemble_instructions
 from src.api.entities_api.orchestration.instructions.include_lists import (
     L2_INSTRUCTIONS, L3_INSTRUCTIONS, L3_WEB_USE_INSTRUCTIONS,
-    L4_RESEARCH_INSTRUCTIONS, LEVEL_4_SUPERVISOR_INSTRUCTIONS,
+    L4_JUNIOR_ENGINEER_INSTRUCTIONS, L4_RESEARCH_INSTRUCTIONS,
+    L4_SENIOR_ENGINEER_INSTRUCTIONS, LEVEL_4_SUPERVISOR_INSTRUCTIONS,
     NO_CORE_INSTRUCTIONS)
 from src.api.entities_api.platform_tools.definitions.record_tool_decision import \
     record_tool_decision
@@ -307,6 +308,114 @@ class ConversationContextMixin:
             "content": "\n\n".join(block for block in content_blocks if block),
         }
 
+    async def _build_senior_engineer_message(
+        self,
+        assistant_id: str,
+        decision_telemetry: bool = False,
+        agent_mode: bool = False,
+        web_access: bool = True,
+        deep_research: bool = True,
+    ) -> Dict:
+        cache = self.get_assistant_cache()
+        cfg = await cache.retrieve(assistant_id)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        instruction_keys = list(
+            dict.fromkeys(
+                [
+                    *(["TOOL_DECISION_PROTOCOL"] if decision_telemetry else []),
+                    *L4_SENIOR_ENGINEER_INSTRUCTIONS,
+                    # *(L3_WEB_USE_INSTRUCTIONS if web_access else []),
+                ]
+            )
+        )
+
+        platform_instructions = assemble_instructions(include_keys=instruction_keys)
+
+        raw_tools_list = list(cfg.get("tools") or [])
+
+        if web_access:
+            has_web_tool = any(
+                isinstance(t, dict) and t.get("type") == "web_search"
+                for t in raw_tools_list
+            )
+            if not has_web_tool:
+                raw_tools_list.append({"type": "web_search"})
+
+        final_tools = self._resolve_and_prioritize_platform_tools(
+            tools=raw_tools_list,
+            decision_telemetry=decision_telemetry,
+        )
+
+        content_blocks = [
+            f"Today's date and time: {today}",
+            "### ASSISTANT INSTRUCTIONS",
+            cfg.get("instructions", ""),
+            "### OPERATIONAL PROTOCOLS",
+            platform_instructions,
+            "### AVAILABLE TOOLS",
+            f"tools:\n{json.dumps(final_tools)}",
+        ]
+
+        return {
+            "role": "system",
+            "content": "\n\n".join(block for block in content_blocks if block),
+        }
+
+    async def _build_junior_engineer_message(
+        self,
+        assistant_id: str,
+        decision_telemetry: bool = False,
+        agent_mode: bool = False,
+        web_access: bool = True,
+        deep_research: bool = True,
+    ) -> Dict:
+        cache = self.get_assistant_cache()
+        cfg = await cache.retrieve(assistant_id)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        instruction_keys = list(
+            dict.fromkeys(
+                [
+                    *(["TOOL_DECISION_PROTOCOL"] if decision_telemetry else []),
+                    *L4_SENIOR_ENGINEER_INSTRUCTIONS,
+                    # *(L3_WEB_USE_INSTRUCTIONS if web_access else []),
+                ]
+            )
+        )
+
+        platform_instructions = assemble_instructions(include_keys=instruction_keys)
+
+        raw_tools_list = list(cfg.get("tools") or [])
+
+        if web_access:
+            has_web_tool = any(
+                isinstance(t, dict) and t.get("type") == "web_search"
+                for t in raw_tools_list
+            )
+            if not has_web_tool:
+                raw_tools_list.append({"type": "web_search"})
+
+        final_tools = self._resolve_and_prioritize_platform_tools(
+            tools=raw_tools_list,
+            decision_telemetry=decision_telemetry,
+        )
+
+        content_blocks = [
+            f"Today's date and time: {today}",
+            "### ASSISTANT INSTRUCTIONS",
+            cfg.get("instructions", ""),
+            "### OPERATIONAL PROTOCOLS",
+            platform_instructions,
+            "### AVAILABLE TOOLS",
+            f"tools:\n{json.dumps(final_tools)}",
+        ]
+
+        return {
+            "role": "system",
+            "content": "\n\n".join(block for block in content_blocks if block),
+        }
+
     async def _build_native_function_calls_system_message(
         self,
         assistant_id: str,
@@ -358,8 +467,9 @@ class ConversationContextMixin:
         return {
             "role": "system",
             "content": "\n\n".join(block for block in content_blocks if block),
-        }  # -----------------------------------------------------
+        }
 
+    # -----------------------------------------------------
     # ASYNC CONTEXT WINDOW (FIXED)
     # -----------------------------------------------------
     async def _set_up_context_window(
@@ -373,18 +483,20 @@ class ConversationContextMixin:
         agent_mode: bool = False,
         web_access: bool = False,
         deep_research: bool = False,
-        research_worker: bool = False,  # Added flag
+        engineer: bool = False,  # NEW
+        research_worker: bool = False,
+        junior_engineer: bool = False,  # NEW
     ) -> List[Dict]:
 
         # 1. Build the System Message
-        # PRIORITY: Research Worker > Deep Research > Structured Tool Call > Standard
-        if research_worker:
-            system_msg = await self._build_research_worker_message(
+        # PRIORITY: Senior Engineer > Research Supervisor > Research Worker > Junior Engineer > Structured Tool Call > Standard
+        if engineer:
+            system_msg = await self._build_senior_engineer_message(
                 assistant_id=assistant_id,
                 decision_telemetry=decision_telemetry,
                 agent_mode=agent_mode,
                 web_access=web_access,
-                deep_research=False,
+                deep_research=deep_research,
             )
         elif deep_research:
             system_msg = await self._build_research_supervisor_message(
@@ -393,6 +505,22 @@ class ConversationContextMixin:
                 agent_mode=agent_mode,
                 web_access=web_access,
                 deep_research=True,
+            )
+        elif research_worker:
+            system_msg = await self._build_research_worker_message(
+                assistant_id=assistant_id,
+                decision_telemetry=decision_telemetry,
+                agent_mode=agent_mode,
+                web_access=web_access,
+                deep_research=False,
+            )
+        elif junior_engineer:
+            system_msg = await self._build_junior_engineer_message(
+                assistant_id=assistant_id,
+                decision_telemetry=decision_telemetry,
+                agent_mode=agent_mode,
+                web_access=web_access,
+                deep_research=False,
             )
         elif structured_tool_call:
             system_msg = await self._build_native_function_calls_system_message(
