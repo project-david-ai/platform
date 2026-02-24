@@ -1,6 +1,6 @@
-# src/api/entities_api/platform_tools/definitions/network_engineer/search_inventory_by_group.py
+# src/api/entities_api/platform_tools/definitions/network_inventory/search_inventory_by_group.py
 
-search_inventory_by_group = {
+get_device_info = {
     "type": "function",
     "function": {
         "name": "get_device_info",

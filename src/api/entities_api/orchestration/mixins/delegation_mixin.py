@@ -202,7 +202,11 @@ class DelegationMixin:
                 )
 
                 # run.status is a RunStatus str-enum — .value gives the raw string
-                status_value = run.status.value if hasattr(run.status, "value") else str(run.status)
+                status_value = (
+                    run.status.value
+                    if hasattr(run.status, "value")
+                    else str(run.status)
+                )
 
                 LOG.critical(
                     "██████ [DELEGATE_POLL] run_id=%s status=%s elapsed=%.1fs ██████",
@@ -226,7 +230,9 @@ class DelegationMixin:
             elapsed += poll_interval
 
         LOG.error("❌ [DELEGATE_POLL] run_id=%s timed out after %ss.", run_id, timeout)
-        raise asyncio.TimeoutError(f"Worker run {run_id} did not complete within {timeout}s")
+        raise asyncio.TimeoutError(
+            f"Worker run {run_id} did not complete within {timeout}s"
+        )
 
     # ------------------------------------------------------------------
     # HELPER: Lifecycle cleanup for any ephemeral assistant + thread.
@@ -382,7 +388,9 @@ class DelegationMixin:
             return None
 
         except Exception as e:
-            LOG.exception("❌ [WORKER_FINAL_REPORT_ERROR] Failed to fetch report: %s", e)
+            LOG.exception(
+                "❌ [WORKER_FINAL_REPORT_ERROR] Failed to fetch report: %s", e
+            )
             return None
 
     # ------------------------------------------------------------------
@@ -440,10 +448,14 @@ class DelegationMixin:
                 continue
 
             # 🛑 GUARD 2: Drop tool call argument frames
-            if getattr(event, "tool_calls", None) or getattr(event, "function_call", None):
+            if getattr(event, "tool_calls", None) or getattr(
+                event, "function_call", None
+            ):
                 continue
 
-            chunk_content = getattr(event, "content", None) or getattr(event, "text", None)
+            chunk_content = getattr(event, "content", None) or getattr(
+                event, "text", None
+            )
             chunk_reasoning = getattr(event, "reasoning", None)
 
             # A. Reasoning chunks — stream only, not buffered
@@ -507,7 +519,9 @@ class DelegationMixin:
             args = arguments_dict
 
         # 2. Yield Initial Status
-        yield self._research_status("Initializing delegation worker...", "in_progress", run_id)
+        yield self._research_status(
+            "Initializing delegation worker...", "in_progress", run_id
+        )
 
         # 3. Create Action record in DB
         action = None
@@ -541,7 +555,9 @@ class DelegationMixin:
                 ephemeral_worker.id, ephemeral_thread.id
             )
 
-            yield self._research_status("Worker active. Streaming...", "in_progress", run_id)
+            yield self._research_status(
+                "Worker active. Streaming...", "in_progress", run_id
+            )
 
             LOG.info(f"🔄 [SUPERVISORS_THREAD_ID]: {thread_id}")
             LOG.info(f"🔄 [WORKERS_THREAD_ID]: {self._research_worker_thread}")
@@ -567,11 +583,15 @@ class DelegationMixin:
                     final_run_status,
                 )
             except asyncio.TimeoutError:
-                LOG.error("⏳ [RESEARCH_DELEGATE] Worker run timed out. Attempting fetch anyway.")
+                LOG.error(
+                    "⏳ [RESEARCH_DELEGATE] Worker run timed out. Attempting fetch anyway."
+                )
                 execution_had_error = True
 
             # 7. Fetch the Worker's final text report from the thread
-            final_content = await self._fetch_worker_final_report(thread_id=ephemeral_thread.id)
+            final_content = await self._fetch_worker_final_report(
+                thread_id=ephemeral_thread.id
+            )
 
             LOG.critical(
                 "██████ [FINAL_THREAD_CONTENT_SUBMITTED_BY_RESEARCH_WORKER]=%s ██████",
@@ -667,7 +687,9 @@ class DelegationMixin:
             args = arguments_dict
 
         # 2. Yield Initial Status
-        yield self._engineer_status("Initializing Junior Engineer...", "in_progress", run_id)
+        yield self._engineer_status(
+            "Initializing Junior Engineer...", "in_progress", run_id
+        )
 
         # 3. Create Action record in DB
         action = None
@@ -738,13 +760,17 @@ class DelegationMixin:
                     final_run_status,
                 )
             except asyncio.TimeoutError:
-                LOG.error("⏳ [ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway.")
+                LOG.error(
+                    "⏳ [ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway."
+                )
                 execution_had_error = True
 
             # 7. Fetch the Junior's one-line confirmation from the thread.
             #    The real data is in the scratchpad — this is just the signal
             #    that tells the Senior the Junior is done and has appended.
-            final_content = await self._fetch_worker_final_report(thread_id=ephemeral_thread.id)
+            final_content = await self._fetch_worker_final_report(
+                thread_id=ephemeral_thread.id
+            )
 
             LOG.critical(
                 "██████ [FINAL_THREAD_CONTENT_SUBMITTED_BY_JUNIOR_ENGINEER]=%s ██████",

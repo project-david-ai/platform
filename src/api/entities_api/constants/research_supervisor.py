@@ -1,4 +1,4 @@
-from entities_api.platform_tools.definitions.delegate_research_task import \
+from entities_api.platform_tools.definitions.delegation.delegate_research_task import \
     delegate_research_task
 from entities_api.platform_tools.definitions.scratch_pad.append_scratchpad import \
     append_scratchpad

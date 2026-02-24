@@ -182,7 +182,7 @@ class NetworkInventoryMixin:
                 if devices:
                     final_content = json.dumps(devices, indent=2)
                 else:
-                    final_content = "⚠️ Error: No devices found in that group. They may not be ingested yet."
+                    final_content = "⚠️ Error: No network_device_commands found in that group. They may not be ingested yet."
 
             elif tool_name == "get_device_info":
                 hostname = arguments_dict["hostname"]

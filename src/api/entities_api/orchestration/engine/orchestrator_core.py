@@ -201,7 +201,9 @@ class OrchestratorCore(
 
         # 1. Acquire Supervisor (Ideally, this is where you'd implement pooling later)
         assistant_manager = AssistantManager()
-        ephemeral_supervisor = await assistant_manager.create_ephemeral_supervisor()
+        ephemeral_supervisor = (
+            await assistant_manager.create_ephemeral_research_supervisor()
+        )
         # =============================================
         # Create research workers persistent thread
         # =============================================

@@ -6,8 +6,8 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from projectdavid import Entity
 
-from entities_api.constants.worker import WORKER_TOOLS
-from src.api.entities_api.constants.delegator import SUPERVISOR_TOOLS
+from entities_api.constants.research_worker import WORKER_TOOLS
+from src.api.entities_api.constants.research_supervisor import SUPERVISOR_TOOLS
 
 load_dotenv()
 
@@ -46,7 +46,7 @@ class AssistantManager:
         """
         return self.client.threads.create_thread()
 
-    async def create_ephemeral_supervisor(self):
+    async def create_ephemeral_research_supervisor(self):
         """
         Creates a temporary worker assistant with a unique UUID.
         Wraps the blocking SDK call in a thread for async compatibility.
@@ -87,6 +87,21 @@ class AssistantManager:
 
     async def create_ephemeral_thread(self):
         return await asyncio.to_thread(self.client.threads.create_thread)
+
+    async def create_ephemeral_junior_engineer(self):
+
+        ephemeral_worker = await asyncio.to_thread(
+            self.client.assistants.create_assistant,
+            name=f"worker_{uuid.uuid4().hex[:8]}",
+            description="Temp assistant for deep research",
+            tools=[],
+            web_access=True,
+            deep_research=False,
+            # ✅ FIX: Pass state here so the worker knows what it is immediately
+            meta_data={"junior_engineer": True},
+        )
+
+        return ephemeral_worker
 
     async def delete_assistant(self, assistant_id: str, permanent: bool = False) -> Any:
         """

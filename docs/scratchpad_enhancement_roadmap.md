@@ -86,7 +86,7 @@ async def handle_research_query(user_query, thread_id):
 ```python
 # Each run creates a new supervisor
 if is_deep_research:
-    ephemeral_supervisor = await create_ephemeral_supervisor()
+    ephemeral_supervisor = await create_ephemeral_research_supervisor()
     self.assistant_id = ephemeral_supervisor.id
 # Supervisor dies after run completes
 ```

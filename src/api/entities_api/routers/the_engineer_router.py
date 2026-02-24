@@ -35,7 +35,7 @@ async def ingest_network_inventory(
 
     - **Scope:** Data is isolated by `assistant_id` (Tenant).
     - **Security:** No passwords are sent here. Only metadata (IP, Hostname, Platform).
-    - **Outcome:** The Assistant can now 'see' these devices to plan actions.
+    - **Outcome:** The Assistant can now 'see' these network_device_commands to plan actions.
     """
     try:
         logging_utility.info(

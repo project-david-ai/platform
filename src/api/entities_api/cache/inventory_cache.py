@@ -36,7 +36,7 @@ class InventoryCache:
         self, user_id: str, assistant_id: str, devices: List[Dict]
     ) -> int:
         """
-        Stores devices into the specific User's and Assistant's namespace.
+        Stores network_device_commands into the specific User's and Assistant's namespace.
         """
         async with self.redis.pipeline() as pipe:
             for dev in devices:
@@ -71,7 +71,7 @@ class InventoryCache:
         self, user_id: str, assistant_id: str, group: str
     ) -> List[Dict]:
         """
-        Retrieves devices for a specific group, strictly within the User's and Assistant's scope.
+        Retrieves network_device_commands for a specific group, strictly within the User's and Assistant's scope.
         """
         # 1. Get hostnames from the scoped group set
         target_group_key = self._group_key(user_id, assistant_id, group)
