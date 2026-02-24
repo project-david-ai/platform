@@ -1,12 +1,11 @@
 # src/api/entities_api/services/assistant_service.py
 
 import time
-from typing import Any, List, Optional
+from typing import Any, List
 
 from fastapi import HTTPException
 from projectdavid import Entity
 from projectdavid_common import UtilsInterface, ValidationInterface
-from sqlalchemy import or_
 
 from src.api.entities_api.db.database import SessionLocal
 from src.api.entities_api.models.models import Assistant, User, VectorStore
@@ -24,7 +23,6 @@ class AssistantService:
 
     RELATIONSHIP_FIELDS = {"users", "vector_stores"}
 
-    # ... [Keep existing _extract_ids and __init__] ...
     @staticmethod
     def _extract_ids(raw_list: list[Any]) -> list[str]:
         ids: list[str] = []
@@ -76,6 +74,7 @@ class AssistantService:
                 agent_mode=assistant.agent_mode,
                 web_access=assistant.web_access,
                 deep_research=assistant.deep_research,
+                engineer=assistant.engineer,  # <--- NEW
                 decision_telemetry=assistant.decision_telemetry,
                 deleted_at=None,  # Explicitly active
             )
@@ -221,9 +220,50 @@ class AssistantService:
 
                 db.commit()
 
-    # ... [Associate/Disassociate helpers remain similar] ...
-    # Ensure Associate/Disassociate checks `deleted_at is None` inside the query logic
-    # if you want to be thorough.
+    # ────────────────────────────────────────────────
+    # ASSOCIATIONS
+    # ────────────────────────────────────────────────
+    def associate_assistant_with_user(self, user_id: str, assistant_id: str) -> None:
+        with SessionLocal() as db:
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            db_asst = (
+                db.query(Assistant)
+                .filter(Assistant.id == assistant_id, Assistant.deleted_at.is_(None))
+                .first()
+            )
+            if not db_asst:
+                raise HTTPException(status_code=404, detail="Assistant not found")
+
+            if db_asst not in user.assistants:
+                user.assistants.append(db_asst)
+                db.commit()
+                logging_utility.info(
+                    f"Associated assistant {assistant_id} with user {user_id}"
+                )
+
+    def disassociate_assistant_from_user(self, user_id: str, assistant_id: str) -> None:
+        with SessionLocal() as db:
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            db_asst = (
+                db.query(Assistant)
+                .filter(Assistant.id == assistant_id, Assistant.deleted_at.is_(None))
+                .first()
+            )
+            if not db_asst:
+                raise HTTPException(status_code=404, detail="Assistant not found")
+
+            if db_asst in user.assistants:
+                user.assistants.remove(db_asst)
+                db.commit()
+                logging_utility.info(
+                    f"Disassociated assistant {assistant_id} from user {user_id}"
+                )
 
     # ────────────────────────────────────────────────
     # Mapper
