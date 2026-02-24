@@ -1,4 +1,4 @@
-delegate_engineer_task = [
+PLATFORM_TOOLS = [
     "code_interpreter",
     "web_search",
     "search_web_page",
