@@ -378,8 +378,7 @@ class ConversationContextMixin:
             dict.fromkeys(
                 [
                     *(["TOOL_DECISION_PROTOCOL"] if decision_telemetry else []),
-                    *L4_SENIOR_ENGINEER_INSTRUCTIONS,
-                    # *(L3_WEB_USE_INSTRUCTIONS if web_access else []),
+                    *L4_JUNIOR_ENGINEER_INSTRUCTIONS,  # ← FIXED
                 ]
             )
         )
@@ -388,14 +387,7 @@ class ConversationContextMixin:
 
         raw_tools_list = list(cfg.get("tools") or [])
 
-        if web_access:
-            has_web_tool = any(
-                isinstance(t, dict) and t.get("type") == "web_search"
-                for t in raw_tools_list
-            )
-            if not has_web_tool:
-                raw_tools_list.append({"type": "web_search"})
-
+        # Junior never gets web access
         final_tools = self._resolve_and_prioritize_platform_tools(
             tools=raw_tools_list,
             decision_telemetry=decision_telemetry,
