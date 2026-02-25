@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -21,11 +22,10 @@ class ToolRoutingMixin:
     and ID propagation for parallel self-correction.
     """
 
-    # UPDATED: Regex for global finding across the stream
     FC_REGEX = re.compile(r"<fc>\s*(?P<payload>\{.*?\})\s*</fc>", re.DOTALL | re.I)
 
     _tool_response: bool = False
-    _function_calls: List[Dict] = []  # [L3] Store tool batch as a list
+    _function_calls: List[Dict] = []
 
     # -----------------------------------------------------
     # State Management
@@ -40,7 +40,6 @@ class ToolRoutingMixin:
     def set_function_call_state(
         self, value: Optional[Union[Dict, List[Dict]]] = None
     ) -> None:
-        """Sets either a single dict or a batch list into the tool queue."""
         if value is None:
             self._function_calls = []
         elif isinstance(value, dict):
@@ -49,14 +48,12 @@ class ToolRoutingMixin:
             self._function_calls = value
 
     def get_function_call_state(self) -> List[Dict]:
-        """Always returns a list for consistent iteration."""
         return self._function_calls
 
     # -----------------------------------------------------
     # Helper Methods
     # -----------------------------------------------------
     def _normalize_arguments(self, payload: Dict) -> Dict:
-        """Heals stringified JSON arguments in a tool payload."""
         args = payload.get("arguments")
         if isinstance(args, str):
             try:
@@ -74,23 +71,16 @@ class ToolRoutingMixin:
     def parse_and_set_function_calls(
         self, accumulated_content: str, assistant_reply: str
     ) -> List[Dict]:
-        """
-        Scans text for tool call payloads.
-        Level 3: Isolates planning blocks and ensures every tool in the batch has a unique ID.
-        """
         from src.api.entities_api.orchestration.mixins.json_utils_mixin import \
             JsonUtilsMixin
 
         if not isinstance(self, JsonUtilsMixin):
             raise TypeError("ToolRoutingMixin must be mixed with JsonUtilsMixin")
 
-        # --- STEP 1: ISOLATION ---
-        # Remove <plan> blocks to avoid executing tools mentioned in reasoning.
         body_to_scan = re.sub(
             r"<plan>.*?</plan>", "", accumulated_content, flags=re.DOTALL
         )
 
-        # --- STEP 2: MULTI-TAG EXTRACTION ---
         matches = self.FC_REGEX.finditer(body_to_scan)
         results = []
 
@@ -98,10 +88,8 @@ class ToolRoutingMixin:
             raw_payload = m.group("payload")
             parsed = self.ensure_valid_json(raw_payload)
             if parsed:
-                # [L3 ID GENERATION]
                 if not parsed.get("id"):
                     parsed["id"] = f"call_{uuid.uuid4().hex[:8]}"
-
                 normalized = self._normalize_arguments(parsed)
                 results.append(normalized)
 
@@ -111,7 +99,6 @@ class ToolRoutingMixin:
             self.set_function_call_state(results)
             return results
 
-        # Legacy fallback for body-of-text JSON
         loose = self.extract_function_calls_within_body_of_text(assistant_reply)
         if loose:
             normalized_list = []
@@ -149,16 +136,32 @@ class ToolRoutingMixin:
         if not batch:
             return
 
+        # ------------------------------------------------------------------
+        # Resolve the owning user_id from the run once per batch.
+        # Required to correctly scope inventory lookups when the platform
+        # client authenticates with an admin key rather than the user's key.
+        # ------------------------------------------------------------------
+        run_user_id = None
+        try:
+            run = await asyncio.to_thread(
+                self.project_david_client.runs.retrieve_run, run_id
+            )
+            run_user_id = getattr(run, "user_id", None)
+            LOG.info(
+                "TOOL-ROUTER ▸ Resolved run_user_id=%s for inventory scoping",
+                run_user_id,
+            )
+        except Exception as e:
+            LOG.warning("TOOL-ROUTER ▸ Could not resolve user_id from run: %s", e)
+
         LOG.info("TOOL-ROUTER ▸ Dispatching Turn Batch (%s total)", len(batch))
 
         for fc in batch:
             name = fc.get("name")
             args = fc.get("arguments")
 
-            # [L3] Prioritize the ID assigned by the parser/model
             current_call_id = tool_call_id or fc.get("id")
 
-            # --- LEVEL 2 HEALING (Per-item) ---
             if not name and decision:
                 inferred_name = (
                     decision.get("tool")
@@ -214,7 +217,6 @@ class ToolRoutingMixin:
                 ):
                     yield chunk
 
-            # --- WEB SEARCH TOOLS ---
             elif name == "read_web_page":
                 async for chunk in self.handle_read_web_page(
                     thread_id=thread_id,
@@ -260,7 +262,7 @@ class ToolRoutingMixin:
                     yield chunk
 
             # ---------------------------------------------------------
-            # ✅ DELEGATION / DEEP RESEARCH / MEMORY TOOLS
+            # DELEGATION / DEEP RESEARCH / MEMORY TOOLS
             # ---------------------------------------------------------
             elif name == "delegate_research_task":
                 async for chunk in self.handle_delegate_research_task(
@@ -318,7 +320,7 @@ class ToolRoutingMixin:
                     yield chunk
 
             # ---------------------------------------------------------
-            # ✅ NETWORK INVENTORY TOOLS
+            # NETWORK INVENTORY TOOLS
             # ---------------------------------------------------------
             elif name == "search_inventory_by_group":
                 async for chunk in self.handle_search_inventory_by_group(
@@ -328,6 +330,7 @@ class ToolRoutingMixin:
                     arguments_dict=args,
                     tool_call_id=current_call_id,
                     decision=decision,
+                    user_id=run_user_id,  # ← ADDED
                 ):
                     yield chunk
 
@@ -339,6 +342,7 @@ class ToolRoutingMixin:
                     arguments_dict=args,
                     tool_call_id=current_call_id,
                     decision=decision,
+                    user_id=run_user_id,  # ← ADDED
                 ):
                     yield chunk
 
@@ -358,8 +362,6 @@ class ToolRoutingMixin:
                     ):
                         yield chunk
                 else:
-                    # FIX: Changed from 'async for' to await since _process_platform_tool_calls
-                    # returns a coroutine, not an async generator
                     result = await self._process_platform_tool_calls(
                         thread_id=thread_id,
                         assistant_id=assistant_id,
@@ -368,13 +370,13 @@ class ToolRoutingMixin:
                         tool_call_id=current_call_id,
                         decision=decision,
                     )
-                    # Yield the result if it exists
                     if result:
                         yield result
 
+            # ---------------------------------------------------------
             # 3. CONSUMER TOOLS (Handover to SDK)
+            # ---------------------------------------------------------
             else:
-                # We yield individual manifests for the SDK to collect
                 async for chunk in self._process_tool_calls(
                     thread_id=thread_id,
                     assistant_id=assistant_id,
