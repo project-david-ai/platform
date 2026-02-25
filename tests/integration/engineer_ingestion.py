@@ -58,9 +58,8 @@ network_inventory = [
 print(f"🚀 Uploading {len(network_inventory)} devices to The Engineer...")
 
 try:
-    # We scope this to a specific Assistant ID (Tenant Partition)
+    # We scope this to the User (Derived automatically from ENTITIES_API_KEY)
     response = client.engineer.ingest_inventory(
-        assistant_id="asst_network_ops_01",
         devices=network_inventory,
         clear_existing=True,  # Optional: Refresh the map completely
     )
