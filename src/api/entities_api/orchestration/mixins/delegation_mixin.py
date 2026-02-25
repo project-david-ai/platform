@@ -7,6 +7,7 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Callable, Dict
 
+from projectdavid import ToolCallRequestEvent
 from projectdavid_common.utilities.logging_service import LoggingUtility
 from projectdavid_common.validation import StatusEnum
 
@@ -183,7 +184,11 @@ class DelegationMixin:
                 )
 
                 # run.status is a RunStatus str-enum — .value gives the raw string
-                status_value = run.status.value if hasattr(run.status, "value") else str(run.status)
+                status_value = (
+                    run.status.value
+                    if hasattr(run.status, "value")
+                    else str(run.status)
+                )
 
                 LOG.critical(
                     "██████ [DELEGATE_POLL] run_id=%s status=%s elapsed=%.1fs ██████",
@@ -207,7 +212,9 @@ class DelegationMixin:
             elapsed += poll_interval
 
         LOG.error("❌ [DELEGATE_POLL] run_id=%s timed out after %ss.", run_id, timeout)
-        raise asyncio.TimeoutError(f"Worker run {run_id} did not complete within {timeout}s")
+        raise asyncio.TimeoutError(
+            f"Worker run {run_id} did not complete within {timeout}s"
+        )
 
     # ------------------------------------------------------------------
     # HELPER: Lifecycle cleanup for any ephemeral assistant + thread.
@@ -341,7 +348,9 @@ class DelegationMixin:
             return None
 
         except Exception as e:
-            LOG.exception("❌ [WORKER_FINAL_REPORT_ERROR] Failed to fetch report: %s", e)
+            LOG.exception(
+                "❌ [WORKER_FINAL_REPORT_ERROR] Failed to fetch report: %s", e
+            )
             return None
 
     # ------------------------------------------------------------------
@@ -387,10 +396,14 @@ class DelegationMixin:
                 continue
 
             # 🛑 GUARD 2: Drop tool call argument frames
-            if getattr(event, "tool_calls", None) or getattr(event, "function_call", None):
+            if getattr(event, "tool_calls", None) or getattr(
+                event, "function_call", None
+            ):
                 continue
 
-            chunk_content = getattr(event, "content", None) or getattr(event, "text", None)
+            chunk_content = getattr(event, "content", None) or getattr(
+                event, "text", None
+            )
             chunk_reasoning = getattr(event, "reasoning", None)
 
             # A. Reasoning chunks — stream only, not buffered
@@ -422,7 +435,6 @@ class DelegationMixin:
     # ------------------------------------------------------------------
     # HANDLER 1: Research Delegation
     # ------------------------------------------------------------------
-
     async def handle_delegate_research_task(
         self, thread_id, run_id, assistant_id, arguments_dict, tool_call_id, decision
     ) -> AsyncGenerator[str, None]:
@@ -443,7 +455,9 @@ class DelegationMixin:
             args = arguments_dict
 
         # 2. Yield Initial Status
-        yield self._research_status("Initializing delegation worker...", "in_progress", run_id)
+        yield self._research_status(
+            "Initializing delegation worker...", "in_progress", run_id
+        )
 
         # 3. Create Action record in DB
         action = None
@@ -485,7 +499,9 @@ class DelegationMixin:
                 ephemeral_worker.id, ephemeral_thread.id
             )
 
-            yield self._research_status("Worker active. Streaming...", "in_progress", run_id)
+            yield self._research_status(
+                "Worker active. Streaming...", "in_progress", run_id
+            )
 
             LOG.info(f"🔄[SUPERVISORS_THREAD_ID]: {thread_id}")
             LOG.info(f"🔄[WORKERS_THREAD_ID]: {self._research_worker_thread}")
@@ -511,11 +527,15 @@ class DelegationMixin:
                     final_run_status,
                 )
             except asyncio.TimeoutError:
-                LOG.error("⏳ [RESEARCH_DELEGATE] Worker run timed out. Attempting fetch anyway.")
+                LOG.error(
+                    "⏳ [RESEARCH_DELEGATE] Worker run timed out. Attempting fetch anyway."
+                )
                 execution_had_error = True
 
             # 7. Fetch the Worker's final text report from the thread
-            final_content = await self._fetch_worker_final_report(thread_id=ephemeral_thread.id)
+            final_content = await self._fetch_worker_final_report(
+                thread_id=ephemeral_thread.id
+            )
 
             LOG.critical(
                 "██████ [FINAL_THREAD_CONTENT_SUBMITTED_BY_RESEARCH_WORKER]=%s ██████",
@@ -559,7 +579,9 @@ class DelegationMixin:
         finally:
             if ephemeral_worker:
                 # --- FIX 2: Safe thread cleanup fallback ---
-                thread_id_to_clean = ephemeral_thread.id if ephemeral_thread else "unknown_thread"
+                thread_id_to_clean = (
+                    ephemeral_thread.id if ephemeral_thread else "unknown_thread"
+                )
                 await self._ephemeral_clean_up(
                     ephemeral_worker.id,
                     thread_id_to_clean,
@@ -596,7 +618,9 @@ class DelegationMixin:
             args = arguments_dict
 
         # 2. Yield Initial Status
-        yield self._engineer_status("Initializing Junior Engineer...", "in_progress", run_id)
+        yield self._engineer_status(
+            "Initializing Junior Engineer...", "in_progress", run_id
+        )
 
         # 3. Create Action (DB)
         action = None
@@ -621,7 +645,6 @@ class DelegationMixin:
             # 4. Setup Ephemeral Assistant & Thread
             ephemeral_junior = await self.create_ephemeral_junior_engineer()
 
-            # Ensure the thread exists so we don't crash on .id
             if not self._research_worker_thread:
                 LOG.info("🧵 Creating new ephemeral thread for Junior Engineer...")
                 self._research_worker_thread = await asyncio.to_thread(
@@ -629,7 +652,6 @@ class DelegationMixin:
                 )
             ephemeral_thread = self._research_worker_thread
 
-            # Build the prompt directly from the schema arguments
             prompt = (
                 f"TARGET DEVICE: {args.get('hostname', 'NOT SPECIFIED')}\n"
                 f"COMMANDS:\n{json.dumps(args.get('commands',[]), indent=2)}\n"
@@ -663,9 +685,9 @@ class DelegationMixin:
                 api_key=self._delegation_api_key,
             )
 
-            # 6. Stream Execution — Passes internal chunks & `<fc>` tags up to orchestrator
-            LOG.critical("🎬 JUNIOR ENGINEER STREAM STARTING - Passing content to orchestrator")
+            LOG.critical("🎬 JUNIOR ENGINEER STREAM STARTING")
 
+            # 6. Stream Execution
             async for event in self._stream_sync_generator(
                 sync_stream.stream_events,
                 model=self._delegation_model,
@@ -678,11 +700,34 @@ class DelegationMixin:
                 ):
                     continue
 
-                # 🛑 GUARD 2: Exclude Native Tool Call Arguments
-                if getattr(event, "tool_calls", None) or getattr(event, "function_call", None):
+                # 🛑 GUARD 2: Exclude Tool Call Argument Frames
+                if getattr(event, "tool_calls", None) or getattr(
+                    event, "function_call", None
+                ):
+                    continue
+                # ==================================================================
+                # ✅ INTERCEPT: Yield a typed ToolInterceptEvent so the frontend
+                #  The Junior emits consumer SDK handled tool calls, but there
+                #  is nobody listening on this end to trigger event handling
+                #  Yield a typed ToolInterceptEvent so the frontend
+                # ===================================================================
+                if isinstance(event, ToolCallRequestEvent):
+                    yield json.dumps(
+                        {
+                            "type": "tool_intercept",
+                            "tool_name": event.tool_name,
+                            "args": event.args,
+                            "action_id": event.action_id,
+                            "origin": "junior_engineer",
+                            "thread_id": ephemeral_thread.id,
+                            "run_id": run_id,
+                        }
+                    )
                     continue
 
-                chunk_content = getattr(event, "content", None) or getattr(event, "text", None)
+                chunk_content = getattr(event, "content", None) or getattr(
+                    event, "text", None
+                )
                 chunk_reasoning = getattr(event, "reasoning", None)
 
                 # A. Reasoning (stream only)
@@ -698,7 +743,7 @@ class DelegationMixin:
                         }
                     )
 
-                # B. Content (stream through so top-level orchestrator can catch `<fc>` tags)
+                # B. Content
                 if chunk_content and isinstance(chunk_content, str):
                     yield json.dumps(
                         {
@@ -711,7 +756,7 @@ class DelegationMixin:
                         }
                     )
 
-            # 7. Wait for run completion before fetching
+            # 7. Wait for run completion
             yield self._engineer_status(
                 "Junior processing. Waiting for completion...", "in_progress", run_id
             )
@@ -721,14 +766,21 @@ class DelegationMixin:
                     run_id=ephemeral_run.id,
                     thread_id=ephemeral_thread.id,
                 )
-                LOG.info("✅ [ENGINEER_DELEGATE] Junior run completed. Status=%s", final_run_status)
+                LOG.info(
+                    "✅ [ENGINEER_DELEGATE] Junior run completed. Status=%s",
+                    final_run_status,
+                )
 
             except asyncio.TimeoutError:
-                LOG.error("⏳ [ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway.")
+                LOG.error(
+                    "⏳ [ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway."
+                )
                 execution_had_error = True
 
-            # 8. Fetch final report (the 1-line confirmation)
-            final_content = await self._fetch_worker_final_report(thread_id=ephemeral_thread.id)
+            # 8. Fetch final report
+            final_content = await self._fetch_worker_final_report(
+                thread_id=ephemeral_thread.id
+            )
 
             LOG.critical(
                 "██████[FINAL_THREAD_CONTENT_SUBMITTED_BY_JUNIOR_ENGINEER]=%s ██████",
@@ -771,7 +823,9 @@ class DelegationMixin:
 
         finally:
             if ephemeral_junior:
-                thread_id_to_clean = ephemeral_thread.id if ephemeral_thread else "unknown_thread"
+                thread_id_to_clean = (
+                    ephemeral_thread.id if ephemeral_thread else "unknown_thread"
+                )
                 await self._ephemeral_clean_up(
                     ephemeral_junior.id,
                     thread_id_to_clean,

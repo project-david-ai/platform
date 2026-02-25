@@ -15,13 +15,13 @@ from projectdavid_common.validation import StatusEnum
 
 from entities_api.cache.assistant_cache import AssistantCache
 from entities_api.clients.delta_normalizer import DeltaNormalizer
-
 # --- DEPENDENCIES ---
 from src.api.entities_api.dependencies import get_redis_sync
-from src.api.entities_api.orchestration.engine.orchestrator_core import OrchestratorCore
-
+from src.api.entities_api.orchestration.engine.orchestrator_core import \
+    OrchestratorCore
 # --- MIXINS ---
-from src.api.entities_api.orchestration.mixins.provider_mixins import _ProviderMixins
+from src.api.entities_api.orchestration.mixins.provider_mixins import \
+    _ProviderMixins
 
 load_dotenv()
 LOG = LoggingUtility()
@@ -69,7 +69,9 @@ class QwenBaseWorker(
         # 2. Cache Service Setup
         if assistant_cache_service:
             self._assistant_cache = assistant_cache_service
-        elif "assistant_cache" in extra and isinstance(extra["assistant_cache"], AssistantCache):
+        elif "assistant_cache" in extra and isinstance(
+            extra["assistant_cache"], AssistantCache
+        ):
             self._assistant_cache = extra["assistant_cache"]
 
         # 3. Config Legacy Support
@@ -172,7 +174,9 @@ class QwenBaseWorker(
 
         try:
             # --- 2. Model Resolution ---
-            if hasattr(self, "_get_model_map") and (mapped := self._get_model_map(model)):
+            if hasattr(self, "_get_model_map") and (
+                mapped := self._get_model_map(model)
+            ):
                 model = mapped
 
             self.assistant_id = assistant_id
@@ -197,7 +201,9 @@ class QwenBaseWorker(
             web_access_setting = self.assistant_config.get("web_access", False)
 
             # Worker role flags — mutually exclusive, enforced below
-            research_worker_setting = self.assistant_config.get("is_research_worker", False)
+            research_worker_setting = self.assistant_config.get(
+                "is_research_worker", False
+            )
 
             # Extract from meta_data for dynamic ephemeral flags
             raw_meta = self.assistant_config.get("meta_data", {})
@@ -258,7 +264,9 @@ class QwenBaseWorker(
             # 5. IDENTITY SWAP (Supervisor roles only)
             # Delegates to parent class Orchestrator method. A no-op for workers.
             # ------------------------------------------------------------------
-            await self._handle_role_based_identity_swap(requested_model=pre_mapped_model)
+            await self._handle_role_based_identity_swap(
+                requested_model=pre_mapped_model
+            )
 
             # Pin the scratchpad to the current thread so that both the Senior
             # and any spawned Junior write to the same shared pad.
@@ -292,7 +300,9 @@ class QwenBaseWorker(
 
             client = self._get_client_instance(api_key=api_key)
 
-            LOG.info(f"\nRAW_CTX_DUMP_QUEN:\n{json.dumps(ctx, indent=2, ensure_ascii=False)}")
+            LOG.info(
+                f"\nRAW_CTX_DUMP_QUEN:\n{json.dumps(ctx, indent=2, ensure_ascii=False)}"
+            )
 
             # ------------------------------------------------------------------
             # 7. THE STREAM LOOP
@@ -347,10 +357,14 @@ class QwenBaseWorker(
                 try:
                     self._decision_payload = json.loads(decision_buffer.strip())
                 except Exception:
-                    LOG.warning(f"Failed to parse decision buffer: {decision_buffer[:50]}...")
+                    LOG.warning(
+                        f"Failed to parse decision buffer: {decision_buffer[:50]}..."
+                    )
 
             # 8b. Extract Tool Calls from accumulated stream output
-            tool_calls_batch = self.parse_and_set_function_calls(accumulated, assistant_reply)
+            tool_calls_batch = self.parse_and_set_function_calls(
+                accumulated, assistant_reply
+            )
 
             message_to_save = assistant_reply
             final_status = StatusEnum.completed.value
@@ -381,7 +395,9 @@ class QwenBaseWorker(
                 # Persist the structural representation, not the raw text
                 message_to_save = json.dumps(tool_calls_structure)
 
-            yield json.dumps({"type": "status", "status": "processing", "run_id": run_id})
+            yield json.dumps(
+                {"type": "status", "status": "processing", "run_id": run_id}
+            )
 
             # ------------------------------------------------------------------
             # 10. FINALIZE & PERSIST
@@ -401,7 +417,9 @@ class QwenBaseWorker(
                 )
 
             if not tool_calls_batch:
-                yield json.dumps({"type": "status", "status": "complete", "run_id": run_id})
+                yield json.dumps(
+                    {"type": "status", "status": "complete", "run_id": run_id}
+                )
 
         except Exception as exc:
             LOG.error(f"Stream Exception: {exc}")
