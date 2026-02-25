@@ -88,8 +88,8 @@ class DelegationMixin:
         return json.dumps(
             {
                 "type": "research_status",
-                "message": activity,
-                "status": state,
+                "activity": activity,
+                "state": state,
                 "tool": "delegate_research_task",
                 "run_id": run_id,
             }
@@ -99,8 +99,8 @@ class DelegationMixin:
         return json.dumps(
             {
                 "type": "engineer_status",
-                "message": activity,
-                "status": state,
+                "activity": activity,
+                "state": state,
                 "tool": "delegate_engineer_task",
                 "run_id": run_id,
             }
@@ -220,7 +220,7 @@ class DelegationMixin:
         elapsed = 0.0
 
         LOG.info(
-            "⏳ [ENGINEER_DELEGATE] Polling action %s for developer completion...",
+            "⏳[ENGINEER_DELEGATE] Polling action %s for developer completion...",
             action_id,
         )
 
@@ -250,7 +250,7 @@ class DelegationMixin:
 
             except Exception as e:
                 LOG.warning(
-                    "⚠️ [ENGINEER_DELEGATE] Poll error for action %s: %s", action_id, e
+                    "⚠️[ENGINEER_DELEGATE] Poll error for action %s: %s", action_id, e
                 )
 
             await asyncio.sleep(poll_interval)
@@ -390,9 +390,7 @@ class DelegationMixin:
             return None
 
         except Exception as e:
-            LOG.exception(
-                "❌ [WORKER_FINAL_REPORT_ERROR] Failed to fetch report: %s", e
-            )
+            LOG.exception("❌[WORKER_FINAL_REPORT_ERROR] Failed to fetch report: %s", e)
             return None
 
     # ------------------------------------------------------------------
@@ -695,7 +693,7 @@ class DelegationMixin:
 
             prompt = (
                 f"TARGET DEVICE: {args.get('hostname', 'NOT SPECIFIED')}\n"
-                f"COMMANDS:\n{json.dumps(args.get('commands', []), indent=2)}\n"
+                f"COMMANDS:\n{json.dumps(args.get('commands',[]), indent=2)}\n"
                 f"TASK CONTEXT: {args.get('task_context', 'No context provided.')}\n"
                 f"FLAG IF: {args.get('flag_criteria', 'No specific flag criteria provided.')}"
             )
@@ -713,8 +711,8 @@ class DelegationMixin:
                 run_id,
             )
 
-            LOG.info(f"🔄 [SENIOR_THREAD_ID]: {thread_id}")
-            LOG.info(f"🔄 [JUNIOR_THREAD_ID]: {ephemeral_thread.id}")
+            LOG.info(f"🔄[SENIOR_THREAD_ID]: {thread_id}")
+            LOG.info(f"🔄[JUNIOR_THREAD_ID]: {ephemeral_thread.id}")
 
             # 5. Configure Stream (Turn 1)
             sync_stream = self.project_david_client.synchronous_inference_stream
@@ -752,7 +750,7 @@ class DelegationMixin:
                 if isinstance(event, ToolCallRequestEvent):
                     intercepted_action_id = event.action_id  # ← capture for polling
                     LOG.info(
-                        "🔧 [ENGINEER_DELEGATE] Intercepted tool call: %s | action_id: %s",
+                        "🔧[ENGINEER_DELEGATE] Intercepted tool call: %s | action_id: %s",
                         event.tool_name,
                         intercepted_action_id,
                     )
