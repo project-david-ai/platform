@@ -13,10 +13,17 @@ import time
 
 from config_orc_fc import config
 from dotenv import load_dotenv
+
 # Import the project classes
 from projectdavid import PlanEvent  # [NEW] Imported for Level 3 visibility
-from projectdavid import (ContentEvent, DecisionEvent, Entity, ReasoningEvent,
-                          StatusEvent, ToolCallRequestEvent)
+from projectdavid import (
+    ContentEvent,
+    DecisionEvent,
+    Entity,
+    ReasoningEvent,
+    WebStatusEvent,
+    ToolCallRequestEvent,
+)
 
 # ------------------------------------------------------------------
 # 0. CONFIGURATION & SDK INIT
