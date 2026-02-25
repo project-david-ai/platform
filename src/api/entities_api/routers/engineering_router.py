@@ -1,5 +1,7 @@
 # src/api/entities_api/routers/engineering.py
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from projectdavid_common.schemas.device_ingest_scema import \
     InventoryIngestRequest
 from projectdavid_common.utilities.logging_service import LoggingUtility
@@ -47,14 +49,13 @@ async def ingest_network_inventory(
 @router.get("/engineer/inventory/device/{hostname}", status_code=status.HTTP_200_OK)
 async def get_device_info(
     hostname: str,
+    user_id: Optional[str] = Query(default=None),
     service: InventoryService = Depends(get_inventory_service),
     auth_key: ApiKeyModel = Depends(get_api_key),
 ):
-    """Matches the 'get_device_info' platform tool."""
+    effective_user_id = user_id if user_id else auth_key.user_id
     try:
-        # Lookup scoped purely to user_id
-        device = await service.get_device(auth_key.user_id, hostname)
-
+        device = await service.get_device(effective_user_id, hostname)
         if not device:
             raise HTTPException(
                 status_code=404, detail="Device not found in inventory map."
@@ -69,13 +70,13 @@ async def get_device_info(
 @router.get("/engineer/inventory/group/{group}", status_code=status.HTTP_200_OK)
 async def search_inventory_by_group(
     group: str,
+    user_id: Optional[str] = Query(default=None),
     service: InventoryService = Depends(get_inventory_service),
     auth_key: ApiKeyModel = Depends(get_api_key),
 ):
-    """Matches the 'search_inventory_by_group' platform tool."""
+    effective_user_id = user_id if user_id else auth_key.user_id
     try:
-        # Lookup scoped purely to user_id
-        devices = await service.search_by_group(auth_key.user_id, group)
+        devices = await service.search_by_group(effective_user_id, group)
         return {"group": group, "count": len(devices), "devices": devices}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

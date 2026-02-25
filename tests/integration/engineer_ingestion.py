@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 
 from dotenv import load_dotenv
 from projectdavid import Entity
@@ -9,22 +10,14 @@ from projectdavid import Entity
 # ------------------------------------------------------------------
 load_dotenv()
 
-# =============================================
-# Initialize the main entry point
-#
-# ===============================================
 client = Entity(
-    base_url=os.getenv(
-        "BASE_URL", "http://localhost:9000/v1"
-    ),  # Ensure /v1 is handled in base or here
+    base_url=os.getenv("BASE_URL", "http://localhost:9000/v1"),
     api_key=os.getenv("ENTITIES_API_KEY"),
 )
 
 # ------------------------------------------------------------------
 # 1. Define the Network Topology (The "Mental Map")
 # ------------------------------------------------------------------
-# NOTE: This only contains metadata. NO PASSWORDS or SSH KEYS.
-# The actual credentials stay local in your secure environment.
 network_inventory = [
     {
         "host_name": "core-router-01",
@@ -52,29 +45,76 @@ network_inventory = [
     },
 ]
 
-# ------------------------------------------------------------------
-# 2. Ingest Inventory to "The Engineer"
-# ------------------------------------------------------------------
-print(f"🚀 Uploading {len(network_inventory)} devices to The Engineer...")
-
-try:
-    # We scope this to the User (Derived automatically from ENTITIES_API_KEY)
-    response = client.engineer.ingest_inventory(
-        devices=network_inventory,
-        clear_existing=True,  # Optional: Refresh the map completely
-    )
-
-    print("\n✅ Success! The Engineer now has a mental map of the network.")
-    print(json.dumps(response, indent=2))
-
-except Exception as e:
-    print(f"\n❌ Failed to ingest inventory: {e}")
 
 # ------------------------------------------------------------------
-# 3. What happens next? (Conceptual)
+# 2. Ingest Inventory
 # ------------------------------------------------------------------
-# Now, when you ask the LLM: "Check the interfaces on the Core Router"
-# The LLM will:
-# 1. Search its tool for 'core-router'
-# 2. Find '10.0.0.1' and 'cisco_ios'
-# 3. Issue a command back to your SDK to execute locally.
+def ingest():
+    print(f"🚀 Uploading {len(network_inventory)} devices to The Engineer...")
+    try:
+        response = client.engineer.ingest_inventory(
+            devices=network_inventory,
+            clear_existing=True,
+        )
+        print("\n✅ Inventory uploaded successfully.")
+        print(json.dumps(response, indent=2))
+    except Exception as e:
+        print(f"\n❌ Failed to ingest inventory: {e}")
+
+
+# ------------------------------------------------------------------
+# 3. Manual Device Lookup
+# ------------------------------------------------------------------
+def lookup_device(hostname: str):
+    print(f"\n🔍 Looking up device: '{hostname}'...")
+    try:
+        result = client.engineer.get_device_info(hostname=hostname)
+        if result:
+            print("✅ Device found:")
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"⚠️  No device found with hostname '{hostname}'.")
+    except Exception as e:
+        print(f"❌ Lookup failed: {e}")
+
+
+# ------------------------------------------------------------------
+# 4. Manual Group Search
+# ------------------------------------------------------------------
+def lookup_group(group: str):
+    print(f"\n🔍 Searching inventory for group: '{group}'...")
+    try:
+        results = client.engineer.search_inventory_by_group(group=group)
+        if results:
+            print(f"✅ Found {len(results)} device(s) in group '{group}':")
+            print(json.dumps(results, indent=2))
+        else:
+            print(f"⚠️  No devices found in group '{group}'.")
+    except Exception as e:
+        print(f"❌ Group search failed: {e}")
+
+
+# ------------------------------------------------------------------
+# 5. Entrypoint — CLI dispatch
+# ------------------------------------------------------------------
+if __name__ == "__main__":
+    args = sys.argv[1:]
+
+    if not args or args[0] == "ingest":
+        ingest()
+        lookup_device("core-router-01")
+        lookup_group("core")
+
+    elif args[0] == "device" and len(args) == 2:
+        lookup_device(args[1])
+
+    elif args[0] == "group" and len(args) == 2:
+        lookup_group(args[1])
+
+    else:
+        print("Usage:")
+        print(
+            "  python script.py ingest                  # Upload inventory + run test searches"
+        )
+        print("  python script.py device <hostname>       # Look up a specific device")
+        print("  python script.py group  <group_name>     # Search by group")

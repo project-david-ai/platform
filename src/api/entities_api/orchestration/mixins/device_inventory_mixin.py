@@ -12,9 +12,6 @@ LOG = LoggingUtility()
 
 
 def _status(run_id: str, tool: str, message: str, status: str = "running") -> str:
-    """
-    Emit a status event as raw JSON conforming to the stream EVENT_CONTRACT.
-    """
     return json.dumps(
         {
             "type": "engineer_status",
@@ -39,7 +36,6 @@ class NetworkInventoryMixin:
     def _format_engineer_tool_error(
         tool_name: str, error_content: str, inputs: Dict[str, Any]
     ) -> str:
-        """Translates failures into actionable instructions for the LMM."""
         if not error_content:
             error_content = "Unknown Error (Empty Response)"
 
@@ -78,16 +74,21 @@ class NetworkInventoryMixin:
         arguments_dict: Dict[str, Any],
         tool_call_id: Optional[str],
         decision: Optional[Dict],
+        user_id: Optional[str] = None,  # ← ADDED
     ) -> AsyncGenerator[str, None]:
         """
         Shared core logic for Inventory Search and Device Lookup.
+
+        user_id: When the platform client uses an admin API key, pass the
+                 owning user's ID here so inventory lookups hit the correct
+                 bucket rather than the admin's empty one.
         """
         ts_start = asyncio.get_event_loop().time()
 
         # --- [1] STATUS: VALIDATING ---
         yield _status(run_id, tool_name, "Validating parameters...")
 
-        # --- [2] VALIDATION (Skip action creation if this fails, just like ScratchpadMixin) ---
+        # --- [2] VALIDATION ---
         validator = ToolValidator()
         validator.schema_registry = {tool_name: required_schema}
         validation_error = validator.validate_args(tool_name, arguments_dict)
@@ -100,12 +101,9 @@ class NetworkInventoryMixin:
                 f"Validation failed: {validation_error}",
                 status="error",
             )
-
             error_feedback = self._format_engineer_tool_error(
                 tool_name, f"Validation Error: {validation_error}", arguments_dict
             )
-
-            # Submit output directly with action=None
             await self.submit_tool_output(
                 thread_id=thread_id,
                 assistant_id=assistant_id,
@@ -139,10 +137,10 @@ class NetworkInventoryMixin:
                     tool_name,
                     f"Searching inventory map for group: '{group}'...",
                 )
-
                 res = await asyncio.to_thread(
                     self.project_david_client.engineer.search_inventory_by_group,
-                    group=group,  # REMOVED assistant_id
+                    group=group,
+                    user_id=user_id,  # ← ADDED
                 )
 
             elif tool_name == "get_device_info":
@@ -150,11 +148,12 @@ class NetworkInventoryMixin:
                 yield _status(
                     run_id, tool_name, f"Looking up device details for: '{hostname}'..."
                 )
-
                 res = await asyncio.to_thread(
                     self.project_david_client.engineer.get_device_info,
-                    hostname=hostname,  # REMOVED assistant_id
+                    hostname=hostname,
+                    user_id=user_id,  # ← ADDED
                 )
+
             else:
                 raise ValueError(f"Unknown engineer tool: {tool_name}")
 
@@ -166,7 +165,6 @@ class NetworkInventoryMixin:
                 )
                 is_error = False
             else:
-                # Handle empty returns cleanly
                 final_content = self._format_engineer_tool_error(
                     tool_name, "Empty result (not found)", arguments_dict
                 )
@@ -185,7 +183,6 @@ class NetworkInventoryMixin:
                     else StatusEnum.failed.value
                 ),
             )
-
             await self.submit_tool_output(
                 thread_id=thread_id,
                 assistant_id=assistant_id,
@@ -203,22 +200,19 @@ class NetworkInventoryMixin:
             )
 
         except Exception as exc:
-            # --- [7] HARD FAILURE EXCEPTION HANDLING ---
+            # --- [7] HARD FAILURE ---
             LOG.error(f"[{run_id}] {tool_name} HARD FAILURE: {exc}", exc_info=True)
             yield _status(
                 run_id, tool_name, f"Critical failure: {str(exc)}", status="error"
             )
-
             error_hint = self._format_engineer_tool_error(
                 tool_name, str(exc), arguments_dict
             )
-
             await asyncio.to_thread(
                 self.project_david_client.actions.update_action,
                 action_id=action.id,
                 status=StatusEnum.failed.value,
             )
-
             await self.submit_tool_output(
                 thread_id=thread_id,
                 assistant_id=assistant_id,
@@ -239,6 +233,7 @@ class NetworkInventoryMixin:
         arguments_dict: Dict[str, Any],
         tool_call_id: Optional[str] = None,
         decision: Optional[Dict] = None,
+        user_id: Optional[str] = None,  # ← ADDED
     ) -> AsyncGenerator[str, None]:
         """Handler for 'search_inventory_by_group'."""
         async for event in self._execute_engineer_tool_logic(
@@ -250,6 +245,7 @@ class NetworkInventoryMixin:
             arguments_dict=arguments_dict,
             tool_call_id=tool_call_id,
             decision=decision,
+            user_id=user_id,  # ← ADDED
         ):
             yield event
 
@@ -261,6 +257,7 @@ class NetworkInventoryMixin:
         arguments_dict: Dict[str, Any],
         tool_call_id: Optional[str] = None,
         decision: Optional[Dict] = None,
+        user_id: Optional[str] = None,  # ← ADDED
     ) -> AsyncGenerator[str, None]:
         """Handler for 'get_device_info'."""
         async for event in self._execute_engineer_tool_logic(
@@ -272,5 +269,6 @@ class NetworkInventoryMixin:
             arguments_dict=arguments_dict,
             tool_call_id=tool_call_id,
             decision=decision,
+            user_id=user_id,  # ← ADDED
         ):
             yield event
