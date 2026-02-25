@@ -53,8 +53,12 @@ class HermesDefaultBaseWorker(
         # 1. Config & Dependencies
         self.api_key = api_key or extra.get("api_key")
         # ephemeral worker config
-        # These objects are used for deep search
+        # These objects are used for deep search and engineering flows
         self.is_deep_research = None
+
+        # --- NEW: Engineer flow tracking variables ---
+        self.is_engineer = None
+
         self._delete_ephemeral_thread = delete_ephemeral_thread or extra.get(
             "delete_ephemeral_thread"
         )
@@ -63,6 +67,7 @@ class HermesDefaultBaseWorker(
 
         # --- [FIX 3] Missing Init Property ---
         self._research_worker_thread = None
+        self._worker_thread = None
 
         # 1. Capture the 'assistant_cache' argument manually
         arg_assistant_cache_dict = extra.get("assistant_cache")
@@ -173,12 +178,18 @@ class HermesDefaultBaseWorker(
             self.assistant_id = assistant_id
             await self._ensure_config_loaded()
 
-            # --- [NEW] DEEP RESEARCH / SUPERVISOR LOGIC ---
+            # --- [NEW] DEEP RESEARCH & ENGINEER LOGIC ---
             self.is_deep_research = self.assistant_config.get("deep_research", False)
+            self.is_engineer = self.assistant_config.get("is_engineer", False)
+            LOG.info(
+                "[DEEP_RESEARCH_MODE]=%s | [ENGINEER_MODE]=%s",
+                self.is_deep_research,
+                self.is_engineer,
+            )
 
-            # C. Execute Identity Swap (Refactored)
+            # C. Execute Identity Swap (Refactored for Generalized Roles)
             # This handles the supervisor creation, ID swapping, and config reloading
-            await self._handle_deep_research_identity_swap(
+            await self._handle_role_based_identity_swap(
                 requested_model=pre_mapped_model
             )
 
@@ -187,33 +198,56 @@ class HermesDefaultBaseWorker(
 
             agent_mode_setting = self.assistant_config.get("agent_mode", False)
             decision_telemetry = self.assistant_config.get("decision_telemetry", False)
-            # Fixed incorrect cache key reference (decision_telemetry -> web_access)
+
+            # --- [CRITICAL FIX START] ---
+            # 1. Default to user preference (usually True for standard agents)
             web_access_setting = self.assistant_config.get("web_access", False)
 
-            # 2. Check if this is a research worker
+            # 2. Extract Worker / Junior flags
             research_worker_setting = self.assistant_config.get(
                 "is_research_worker", False
             )
+            raw_meta = self.assistant_config.get("meta_data", {})
+            junior_engineer_setting = (
+                str(raw_meta.get("junior_engineer_calling", False)).lower() == "true"
+            )
 
             # 3. CONFLICT RESOLUTION:
-            # If Deep Research (Supervisor) is active, it MUST override Worker settings.
-            # A Supervisor cannot be a Worker.
-            if self.is_deep_research:
-                web_access_setting = False  # Supervisor creates plans, does not browse
-                research_worker_setting = (
-                    False  # Supervisor is NOT a worker (Fixes Prompt Issue)
-                )
+            if self.is_engineer:
+                # SENIOR ENGINEER (SUPERVISOR)
+                web_access_setting = False
+                research_worker_setting = False
+                junior_engineer_setting = False
+                self.is_deep_research = False
 
-            # 4. WORKER LOGIC (Only if NOT a Supervisor):
+            elif self.is_deep_research:
+                # RESEARCH SUPERVISOR
+                web_access_setting = False
+                research_worker_setting = False
+                junior_engineer_setting = False
+
             elif research_worker_setting:
+                # RESEARCH WORKER
                 web_access_setting = True
+                junior_engineer_setting = False
 
-            # --- [FIX 2] Research Worker Conflict Resolution (Removed redundant re-fetch
-            # and added proper consolidated logging) ---
+            elif junior_engineer_setting:
+                # JUNIOR NETWORK ENGINEER
+                web_access_setting = False
+                research_worker_setting = False
+
+            # --- [FIX 2] Conflict Resolution Logging ---
             LOG.critical(
-                "██████ [ROLE CONFIG] DeepResearch (Supervisor)=%s | Worker=%s | WebAccess=%s ██████",
+                "██████ [ROLE CONFIG] "
+                "SeniorEngineer=%s | "
+                "DeepResearch=%s | "
+                "ResearchWorker=%s | "
+                "JuniorEngineer=%s | "
+                "WebAccess=%s ██████",
+                self.is_engineer,
                 self.is_deep_research,
                 research_worker_setting,
+                junior_engineer_setting,
                 web_access_setting,
             )
 
@@ -227,7 +261,9 @@ class HermesDefaultBaseWorker(
                 decision_telemetry=decision_telemetry,
                 web_access=web_access_setting,
                 deep_research=self.is_deep_research,
+                engineer=self.is_engineer,
                 research_worker=research_worker_setting,
+                junior_engineer=junior_engineer_setting,
             )
 
             if not api_key:

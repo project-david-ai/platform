@@ -52,6 +52,10 @@ class DeepSeekBaseWorker(
 
         self.api_key = api_key or extra.get("api_key")
         self.is_deep_research = None
+
+        # --- NEW: Engineer flow tracking variables ---
+        self.is_engineer = None
+
         self._delete_ephemeral_thread = delete_ephemeral_thread or extra.get(
             "delete_ephemeral_thread"
         )
@@ -60,6 +64,7 @@ class DeepSeekBaseWorker(
 
         # --- [FIX 3] Missing Init Property ---
         self._research_worker_thread = None
+        self._worker_thread = None
 
         self.redis = redis or get_redis_sync()
 
@@ -130,7 +135,7 @@ class DeepSeekBaseWorker(
         self._delegation_api_key = api_key
         self.ephemeral_supervisor_id = None
 
-        # --- [FIX 1] Scratchpad Variable Initialization ---
+        # ---[FIX 1] Scratchpad Variable Initialization ---
         self._scratch_pad_thread = None
 
         redis = self.redis
@@ -159,13 +164,18 @@ class DeepSeekBaseWorker(
             self.assistant_id = assistant_id
             await self._ensure_config_loaded()
 
-            # --- DEEP RESEARCH INTEGRATION ---
+            # --- DEEP RESEARCH & ENGINEER INTEGRATION ---
             self.is_deep_research = self.assistant_config.get("deep_research", False)
-            LOG.info("[DEEP_RESEARCH_MODE]=%s", self.is_deep_research)
+            self.is_engineer = self.assistant_config.get("is_engineer", False)
+            LOG.info(
+                "[DEEP_RESEARCH_MODE]=%s | [ENGINEER_MODE]=%s",
+                self.is_deep_research,
+                self.is_engineer,
+            )
 
-            # C. Execute Identity Swap (Refactored)
+            # C. Execute Identity Swap (Refactored for Generalized Roles)
             # This handles the supervisor creation, ID swapping, and config reloading
-            await self._handle_deep_research_identity_swap(
+            await self._handle_role_based_identity_swap(
                 requested_model=pre_mapped_model
             )
 
@@ -181,30 +191,55 @@ class DeepSeekBaseWorker(
             # 1. Default to user preference (usually True for standard agents)
             web_access_setting = self.assistant_config.get("web_access", False)
 
-            # 2. Check if this is a research worker
+            # 2. Extract Worker / Junior flags
             research_worker_setting = self.assistant_config.get(
                 "is_research_worker", False
             )
+            raw_meta = self.assistant_config.get("meta_data", {})
+            junior_engineer_setting = (
+                str(raw_meta.get("junior_engineer_calling", False)).lower() == "true"
+            )
 
             # 3. CONFLICT RESOLUTION:
-            if self.is_deep_research:
-                web_access_setting = False  # Supervisor creates plans, does not browse
-                research_worker_setting = False  # Supervisor is NOT a worker
+            if self.is_engineer:
+                # SENIOR ENGINEER (SUPERVISOR)
+                web_access_setting = False
+                research_worker_setting = False
+                junior_engineer_setting = False
+                self.is_deep_research = False
 
-            # 4. WORKER LOGIC (Only if NOT a Supervisor):
+            elif self.is_deep_research:
+                # RESEARCH SUPERVISOR
+                web_access_setting = False
+                research_worker_setting = False
+                junior_engineer_setting = False
+
             elif research_worker_setting:
+                # RESEARCH WORKER
                 web_access_setting = True
+                junior_engineer_setting = False
 
-            # --- [FIX 2] Research Worker Conflict Resolution (Added missing consolidated log,
-            # ensuring NO redundant fetches override the conflict resolution block above!) ---
+            elif junior_engineer_setting:
+                # JUNIOR NETWORK ENGINEER
+                web_access_setting = False
+                research_worker_setting = False
+
+            # --- [FIX 2] Conflict Resolution Logging ---
             LOG.critical(
-                "██████ [ROLE CONFIG] DeepResearch (Supervisor)=%s | Worker=%s | WebAccess=%s ██████",
+                "██████ [ROLE CONFIG] "
+                "SeniorEngineer=%s | "
+                "DeepResearch=%s | "
+                "ResearchWorker=%s | "
+                "JuniorEngineer=%s | "
+                "WebAccess=%s ██████",
+                self.is_engineer,
                 self.is_deep_research,
                 research_worker_setting,
+                junior_engineer_setting,
                 web_access_setting,
             )
 
-            # Updated to use self.assistant_id (handles identity swap) and pass deep_research flag
+            # Updated to use self.assistant_id (handles identity swap) and pass all flags
             ctx = await self._set_up_context_window(
                 assistant_id=self.assistant_id,
                 thread_id=thread_id,
@@ -214,7 +249,9 @@ class DeepSeekBaseWorker(
                 decision_telemetry=decision_telemetry,
                 web_access=web_access_setting,
                 deep_research=self.is_deep_research,
+                engineer=self.is_engineer,
                 research_worker=research_worker_setting,
+                junior_engineer=junior_engineer_setting,
             )
 
             if not api_key:
@@ -338,7 +375,7 @@ class DeepSeekBaseWorker(
                     delete_thread=False,
                 )
 
-            # --- [FIX] Restore original assistant identity AFTER cleanup & persistence ---
+            # ---[FIX] Restore original assistant identity AFTER cleanup & persistence ---
             self.assistant_id = _original_assistant_id
 
             # --- [FIX] Nullify ephemeral ID ---
