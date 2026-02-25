@@ -1,3 +1,5 @@
+# src/api/entities_api/constants/junior_network_engineer.py
+
 from src.api.entities_api.platform_tools.definitions.network_device_commands.execute_network_command import \
     execute_network_command
 
