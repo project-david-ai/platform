@@ -5,7 +5,7 @@ import asyncio
 import json
 import threading
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, Callable, Dict
+from typing import Any, AsyncGenerator, Callable, Dict, Optional
 
 from projectdavid import ToolCallRequestEvent
 from projectdavid_common.utilities.logging_service import LoggingUtility
@@ -31,11 +31,16 @@ LOG = LoggingUtility()
 _TERMINAL_RUN_STATES = {"completed", "failed", "cancelled", "expired"}
 
 # How long to wait for any worker run to complete before giving up (seconds).
-# Applies to both research workers and junior engineers.
 _WORKER_RUN_TIMEOUT = 1200
 
 # How often to poll the run status (seconds)
 _WORKER_POLL_INTERVAL = 2.0
+
+# How long to wait for developer backend to handle an intercepted tool call (seconds).
+_ACTION_COMPLETION_TIMEOUT = 120.0
+
+# How often to poll action status (seconds)
+_ACTION_POLL_INTERVAL = 1.5
 
 
 class DelegationMixin:
@@ -80,40 +85,22 @@ class DelegationMixin:
     # ------------------------------------------------------------------
 
     def _research_status(self, activity: str, state: str, run_id: str) -> str:
-        """
-        Emits a research delegation status event conforming to the EVENT_CONTRACT.
-
-        Shape:
-            {
-                "type":     "research_status",
-                "message":  "<human readable>",
-                "status":   "in_progress" | "completed" | "error",
-                "tool":     "delegate_research_task",
-                "run_id":   "<uuid>"
-            }
-        """
         return json.dumps(
             {
                 "type": "research_status",
-                "message": activity,  # FIXED: Maps correctly to 'message' for the frontend
-                "status": state,  # FIXED: Maps correctly to 'status' for the frontend
+                "message": activity,
+                "status": state,
                 "tool": "delegate_research_task",
                 "run_id": run_id,
             }
         )
 
     def _engineer_status(self, activity: str, state: str, run_id: str) -> str:
-        """
-        Emits a network engineer delegation status event conforming to the
-        EVENT_CONTRACT. Structurally identical to _research_status but carries
-        a distinct "type" discriminator so the frontend can route engineer
-        lifecycle events separately from research events.
-        """
         return json.dumps(
             {
                 "type": "engineer_status",
-                "message": activity,  # FIXED: Maps correctly to 'message'
-                "status": state,  # FIXED: Maps correctly to 'status'
+                "message": activity,
+                "status": state,
                 "tool": "delegate_engineer_task",
                 "run_id": run_id,
             }
@@ -121,7 +108,6 @@ class DelegationMixin:
 
     # ------------------------------------------------------------------
     # HELPER: Bridges blocking generators to async loop (Fixes uvloop error)
-    # Shared by both research and engineer delegation paths.
     # ------------------------------------------------------------------
 
     async def _stream_sync_generator(
@@ -156,7 +142,6 @@ class DelegationMixin:
 
     # ------------------------------------------------------------------
     # HELPER: Poll run status until terminal state or timeout.
-    # Shared by both research and engineer delegation paths.
     # ------------------------------------------------------------------
 
     async def _wait_for_run_completion(
@@ -183,7 +168,6 @@ class DelegationMixin:
                     run_id=run_id,
                 )
 
-                # run.status is a RunStatus str-enum — .value gives the raw string
                 status_value = (
                     run.status.value
                     if hasattr(run.status, "value")
@@ -217,8 +201,70 @@ class DelegationMixin:
         )
 
     # ------------------------------------------------------------------
+    # HELPER: Poll action status until terminal state or timeout.
+    # Used after emitting a ToolInterceptEvent to block until the
+    # developer's backend has executed the tool and submitted the result.
+    # ------------------------------------------------------------------
+
+    async def _wait_for_action_completion(
+        self,
+        action_id: str,
+        timeout: float = _ACTION_COMPLETION_TIMEOUT,
+        poll_interval: float = _ACTION_POLL_INTERVAL,
+    ) -> bool:
+        """
+        Polls until the given action reaches 'completed' or 'failed'.
+        Returns True if completed cleanly, False if timed out or failed.
+        """
+        terminal_states = {"completed", "failed"}
+        elapsed = 0.0
+
+        LOG.info(
+            "⏳ [ENGINEER_DELEGATE] Polling action %s for developer completion...",
+            action_id,
+        )
+
+        while elapsed < timeout:
+            try:
+                action = await asyncio.to_thread(
+                    self.project_david_client.actions.get_action, action_id
+                )
+                status = getattr(action, "status", None)
+                # Handle enum or raw string
+                status_value = status.value if hasattr(status, "value") else str(status)
+
+                LOG.debug(
+                    "[ENGINEER_DELEGATE] Action %s status: %s (elapsed=%.1fs)",
+                    action_id,
+                    status_value,
+                    elapsed,
+                )
+
+                if status_value in terminal_states:
+                    LOG.info(
+                        "✅ [ENGINEER_DELEGATE] Action %s reached terminal state: %s",
+                        action_id,
+                        status_value,
+                    )
+                    return status_value == "completed"
+
+            except Exception as e:
+                LOG.warning(
+                    "⚠️ [ENGINEER_DELEGATE] Poll error for action %s: %s", action_id, e
+                )
+
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+        LOG.error(
+            "⏳ [ENGINEER_DELEGATE] Timed out waiting for action %s after %.0fs.",
+            action_id,
+            timeout,
+        )
+        return False
+
+    # ------------------------------------------------------------------
     # HELPER: Lifecycle cleanup for any ephemeral assistant + thread.
-    # Shared by both research and engineer delegation paths.
     # ------------------------------------------------------------------
 
     async def _ephemeral_clean_up(
@@ -242,7 +288,6 @@ class DelegationMixin:
 
     # ------------------------------------------------------------------
     # HELPER: Intercept tool outputs for inspection without breaking flow.
-    # Shared by both research and engineer delegation paths.
     # ------------------------------------------------------------------
 
     @asynccontextmanager
@@ -277,8 +322,6 @@ class DelegationMixin:
 
     # ------------------------------------------------------------------
     # EPHEMERAL ASSISTANT FACTORIES
-    # Each workflow gets its own factory so assistant profiles (system
-    # prompt + tool set) stay fully decoupled from the shared plumbing.
     # ------------------------------------------------------------------
 
     async def create_ephemeral_worker_assistant(self):
@@ -290,8 +333,7 @@ class DelegationMixin:
         return await manager.create_ephemeral_junior_engineer()
 
     # ------------------------------------------------------------------
-    # SHARED PRIMITIVES: message / run creation and report fetching.
-    # Called identically by both delegation handlers.
+    # SHARED PRIMITIVES
     # ------------------------------------------------------------------
 
     async def create_ephemeral_message(self, thread_id, content, assistant_id):
@@ -406,7 +448,6 @@ class DelegationMixin:
             )
             chunk_reasoning = getattr(event, "reasoning", None)
 
-            # A. Reasoning chunks — stream only, not buffered
             if chunk_reasoning:
                 yield json.dumps(
                     {
@@ -419,7 +460,6 @@ class DelegationMixin:
                     }
                 )
 
-            # B. Content chunks — stream through to caller
             if chunk_content and isinstance(chunk_content, str):
                 yield json.dumps(
                     {
@@ -445,7 +485,6 @@ class DelegationMixin:
 
         LOG.info(f"🔄 [RESEARCH_DELEGATE] STARTING. Run: {run_id}")
 
-        # 1. Parse Arguments
         if isinstance(arguments_dict, str):
             try:
                 args = json.loads(arguments_dict)
@@ -454,12 +493,10 @@ class DelegationMixin:
         else:
             args = arguments_dict
 
-        # 2. Yield Initial Status
         yield self._research_status(
             "Initializing delegation worker...", "in_progress", run_id
         )
 
-        # 3. Create Action record in DB
         action = None
         try:
             action = await asyncio.to_thread(
@@ -476,13 +513,11 @@ class DelegationMixin:
         ephemeral_worker = None
         execution_had_error = False
         ephemeral_run = None
-        ephemeral_thread = None  # Pre-declare for safety in finally block
+        ephemeral_thread = None
 
         try:
-            # 4. Spin up Research Worker assistant + initialize thread if missing
             ephemeral_worker = await self.create_ephemeral_worker_assistant()
 
-            # --- FIX 1: Ensure thread exists ---
             if not self._research_worker_thread:
                 LOG.info("🧵 Creating new ephemeral thread for Research Worker...")
                 self._research_worker_thread = await asyncio.to_thread(
@@ -506,13 +541,11 @@ class DelegationMixin:
             LOG.info(f"🔄[SUPERVISORS_THREAD_ID]: {thread_id}")
             LOG.info(f"🔄[WORKERS_THREAD_ID]: {self._research_worker_thread}")
 
-            # 5. Stream first inference pass via shared consumer
             async for chunk_event in self._stream_worker_inference(
                 ephemeral_thread, ephemeral_worker.id, msg, ephemeral_run, run_id
             ):
                 yield chunk_event
 
-            # 6. Wait for run to reach a terminal state
             yield self._research_status(
                 "Worker processing. Waiting for completion...", "in_progress", run_id
             )
@@ -532,7 +565,6 @@ class DelegationMixin:
                 )
                 execution_had_error = True
 
-            # 7. Fetch the Worker's final text report from the thread
             final_content = await self._fetch_worker_final_report(
                 thread_id=ephemeral_thread.id
             )
@@ -549,7 +581,6 @@ class DelegationMixin:
                 final_content = "No report generated by worker."
                 execution_had_error = True
 
-            # 8. Submit the Worker's report as tool output back to the Supervisor
             await self.submit_tool_output(
                 thread_id=thread_id,
                 assistant_id=assistant_id,
@@ -559,7 +590,6 @@ class DelegationMixin:
                 is_error=execution_had_error,
             )
 
-            # 9. Close out the action record
             if action:
                 await asyncio.to_thread(
                     self.project_david_client.actions.update_action,
@@ -578,7 +608,6 @@ class DelegationMixin:
 
         finally:
             if ephemeral_worker:
-                # --- FIX 2: Safe thread cleanup fallback ---
                 thread_id_to_clean = (
                     ephemeral_thread.id if ephemeral_thread else "unknown_thread"
                 )
@@ -602,6 +631,15 @@ class DelegationMixin:
     ) -> AsyncGenerator[str, None]:
         """
         Senior Network Engineer → Junior Network Engineer delegation.
+
+        Flow:
+          Turn 1 — Junior plans and fires execute_network_command.
+                    We intercept the ToolCallRequestEvent and yield a
+                    ToolInterceptEvent for the developer's backend to handle.
+          [BLOCK] — Poll until the developer confirms the action is completed.
+          Turn 2 — Inject an analysis prompt and create a new run so the
+                    Junior can reason over the returned CLI output.
+          Report  — Fetch the Junior's final text and submit it back to the Senior.
         """
         self._scratch_pad_thread = thread_id
 
@@ -641,6 +679,9 @@ class DelegationMixin:
         ephemeral_run = None
         ephemeral_thread = None
 
+        # Track the intercepted action so we can poll it in step 6.5
+        intercepted_action_id: Optional[str] = None
+
         try:
             # 4. Setup Ephemeral Assistant & Thread
             ephemeral_junior = await self.create_ephemeral_junior_engineer()
@@ -654,7 +695,7 @@ class DelegationMixin:
 
             prompt = (
                 f"TARGET DEVICE: {args.get('hostname', 'NOT SPECIFIED')}\n"
-                f"COMMANDS:\n{json.dumps(args.get('commands',[]), indent=2)}\n"
+                f"COMMANDS:\n{json.dumps(args.get('commands', []), indent=2)}\n"
                 f"TASK CONTEXT: {args.get('task_context', 'No context provided.')}\n"
                 f"FLAG IF: {args.get('flag_criteria', 'No specific flag criteria provided.')}"
             )
@@ -675,7 +716,7 @@ class DelegationMixin:
             LOG.info(f"🔄 [SENIOR_THREAD_ID]: {thread_id}")
             LOG.info(f"🔄 [JUNIOR_THREAD_ID]: {ephemeral_thread.id}")
 
-            # 5. Configure Stream
+            # 5. Configure Stream (Turn 1)
             sync_stream = self.project_david_client.synchronous_inference_stream
             sync_stream.setup(
                 thread_id=ephemeral_thread.id,
@@ -685,9 +726,9 @@ class DelegationMixin:
                 api_key=self._delegation_api_key,
             )
 
-            LOG.critical("🎬 JUNIOR ENGINEER STREAM STARTING")
+            LOG.critical("🎬 JUNIOR ENGINEER STREAM STARTING — TURN 1")
 
-            # 6. Stream Execution
+            # 6. Stream Turn 1 — intercept the tool call, yield it for developer handling
             async for event in self._stream_sync_generator(
                 sync_stream.stream_events,
                 model=self._delegation_model,
@@ -705,22 +746,28 @@ class DelegationMixin:
                     event, "function_call", None
                 ):
                     continue
-                # ==================================================================
-                # ✅ INTERCEPT: Yield a typed ToolInterceptEvent so the frontend
-                #  The Junior emits consumer SDK handled tool calls, but there
-                #  is nobody listening on this end to trigger event handling
-                #  Yield a typed ToolInterceptEvent so the frontend
-                # ===================================================================
+
+                # ✅ INTERCEPT: Capture the action_id and yield the event for
+                #    the developer's backend to execute via execute_intercepted().
                 if isinstance(event, ToolCallRequestEvent):
+                    intercepted_action_id = event.action_id  # ← capture for polling
+                    LOG.info(
+                        "🔧 [ENGINEER_DELEGATE] Intercepted tool call: %s | action_id: %s",
+                        event.tool_name,
+                        intercepted_action_id,
+                    )
                     yield json.dumps(
                         {
                             "type": "tool_intercept",
                             "tool_name": event.tool_name,
                             "args": event.args,
                             "action_id": event.action_id,
+                            "tool_call_id": event.tool_call_id,
                             "origin": "junior_engineer",
                             "thread_id": ephemeral_thread.id,
                             "run_id": run_id,
+                            "origin_run_id": ephemeral_run.id,
+                            "origin_assistant_id": ephemeral_junior.id,
                         }
                     )
                     continue
@@ -730,7 +777,6 @@ class DelegationMixin:
                 )
                 chunk_reasoning = getattr(event, "reasoning", None)
 
-                # A. Reasoning (stream only)
                 if chunk_reasoning:
                     yield json.dumps(
                         {
@@ -743,7 +789,6 @@ class DelegationMixin:
                         }
                     )
 
-                # B. Content
                 if chunk_content and isinstance(chunk_content, str):
                     yield json.dumps(
                         {
@@ -756,7 +801,117 @@ class DelegationMixin:
                         }
                     )
 
-            # 7. Wait for run completion
+            # ------------------------------------------------------------------
+            # 6.5 SECOND TURN — only fires if a tool was intercepted
+            # ------------------------------------------------------------------
+            if intercepted_action_id:
+                yield self._engineer_status(
+                    "Waiting for local tool execution to complete...",
+                    "in_progress",
+                    run_id,
+                )
+
+                tool_completed = await self._wait_for_action_completion(
+                    action_id=intercepted_action_id,
+                )
+
+                if tool_completed:
+                    LOG.info(
+                        "✅ [ENGINEER_DELEGATE] Action %s confirmed complete. Triggering Turn 2.",
+                        intercepted_action_id,
+                    )
+                    yield self._engineer_status(
+                        "Command output received. Junior Engineer analysing results...",
+                        "in_progress",
+                        run_id,
+                    )
+
+                    # Inject an analysis prompt — gives the Junior clear direction
+                    # for Turn 2 without needing it to re-examine its own tool call.
+                    analysis_prompt = (
+                        f"The network command has been executed on {args.get('hostname', 'the target device')}. "
+                        f"The CLI output has been returned as a tool result in your context.\n\n"
+                        f"Please now:\n"
+                        f"1. Carefully analyse the command output.\n"
+                        f"2. Identify any issues, anomalies, or items matching the flag criteria: "
+                        f"{args.get('flag_criteria', 'any notable findings')}.\n"
+                        f"3. Provide a concise diagnostic report summarising your findings "
+                        f"and any recommended next steps."
+                    )
+
+                    analysis_msg = await self.create_ephemeral_message(
+                        ephemeral_thread.id, analysis_prompt, ephemeral_junior.id
+                    )
+
+                    # New run — tool result + analysis prompt are now last on the thread
+                    ephemeral_run = await self.create_ephemeral_run(
+                        ephemeral_junior.id, ephemeral_thread.id
+                    )
+
+                    LOG.critical("🎬 JUNIOR ENGINEER STREAM STARTING — TURN 2")
+
+                    sync_stream.setup(
+                        thread_id=ephemeral_thread.id,
+                        assistant_id=ephemeral_junior.id,
+                        message_id=analysis_msg.id,
+                        run_id=ephemeral_run.id,
+                        api_key=self._delegation_api_key,
+                    )
+
+                    async for event in self._stream_sync_generator(
+                        sync_stream.stream_events,
+                        model=self._delegation_model,
+                    ):
+                        if (
+                            hasattr(event, "tool")
+                            or hasattr(event, "status")
+                            or getattr(event, "type", "") == "status"
+                        ):
+                            continue
+
+                        if getattr(event, "tool_calls", None) or getattr(
+                            event, "function_call", None
+                        ):
+                            continue
+
+                        chunk_content = getattr(event, "content", None) or getattr(
+                            event, "text", None
+                        )
+                        chunk_reasoning = getattr(event, "reasoning", None)
+
+                        if chunk_reasoning:
+                            yield json.dumps(
+                                {
+                                    "stream_type": "delegation",
+                                    "chunk": {
+                                        "type": "reasoning",
+                                        "content": chunk_reasoning,
+                                        "run_id": run_id,
+                                    },
+                                }
+                            )
+
+                        if chunk_content and isinstance(chunk_content, str):
+                            yield json.dumps(
+                                {
+                                    "stream_type": "delegation",
+                                    "chunk": {
+                                        "type": "content",
+                                        "content": chunk_content,
+                                        "run_id": run_id,
+                                    },
+                                }
+                            )
+
+                else:
+                    LOG.error(
+                        "❌ [ENGINEER_DELEGATE] Action %s did not complete in time. "
+                        "Skipping Turn 2.",
+                        intercepted_action_id,
+                    )
+                    execution_had_error = True
+
+            # 7. Wait for the active run (Turn 1 if no intercept, Turn 2 if intercept) to complete
             yield self._engineer_status(
                 "Junior processing. Waiting for completion...", "in_progress", run_id
             )
@@ -770,7 +925,6 @@ class DelegationMixin:
                     "✅ [ENGINEER_DELEGATE] Junior run completed. Status=%s",
                     final_run_status,
                 )
-
             except asyncio.TimeoutError:
                 LOG.error(
                     "⏳ [ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway."
