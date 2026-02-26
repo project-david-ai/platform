@@ -269,10 +269,14 @@ SENIOR_ENGINEER_INSTRUCTIONS = {
         "rules out alternative causes."
     ),
     # 10. FINAL OUTPUT
+    # 10. FINAL OUTPUT
     "SE_FINAL_OUTPUT_PROTOCOL": (
         "### 📝 FINAL OUTPUT — CHANGE REQUEST DOCUMENT\n"
         "This is the ONLY time you output standard text. It must be operator-executable "
         "by an on-call engineer at 3am with no additional context.\n\n"
+        "**STRICT FORMATTING RULE:**\n"
+        "You MUST NOT output any conversational filler, preambles, or 'Diagnostic Reports'. "
+        "The VERY FIRST WORDS of your final text output MUST be exactly 'INCIDENT SUMMARY'.\n\n"
         "**REQUIRED SECTIONS — IN ORDER:**\n\n"
         "**1. INCIDENT SUMMARY**\n"
         "   Fault description | Reported time | Affected services and users\n\n"
