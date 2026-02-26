@@ -26,6 +26,7 @@ class ToolRoutingMixin:
 
     _tool_response: bool = False
     _function_calls: List[Dict] = []
+    _tools_called: List[str] = []  # Full ordered log of every tool dispatched this run
 
     # -----------------------------------------------------
     # State Management
@@ -49,6 +50,18 @@ class ToolRoutingMixin:
 
     def get_function_call_state(self) -> List[Dict]:
         return self._function_calls
+
+    def reset_tools_called(self) -> None:
+        """Reset the tools called log at the start of each turn."""
+        self._tools_called = []
+
+    def get_tools_called(self) -> List[str]:
+        """
+        Returns the full ordered log of every tool dispatched this run,
+        including duplicates. Parallel tool batches are captured in
+        dispatch order within each batch.
+        """
+        return list(self._tools_called)
 
     # -----------------------------------------------------
     # Helper Methods
@@ -180,6 +193,7 @@ class ToolRoutingMixin:
                 continue
 
             LOG.info("TOOL-ROUTER ▶ dispatching: %s (ID: %s)", name, current_call_id)
+            self._tools_called.append(name)  # ← capture every dispatch in order
 
             # ---------------------------------------------------------
             # 1. PLATFORM TOOLS (Explicit Routing)
@@ -330,7 +344,7 @@ class ToolRoutingMixin:
                     arguments_dict=args,
                     tool_call_id=current_call_id,
                     decision=decision,
-                    user_id=run_user_id,  # ← ADDED
+                    user_id=run_user_id,
                 ):
                     yield chunk
 
@@ -342,7 +356,7 @@ class ToolRoutingMixin:
                     arguments_dict=args,
                     tool_call_id=current_call_id,
                     decision=decision,
-                    user_id=run_user_id,  # ← ADDED
+                    user_id=run_user_id,
                 ):
                     yield chunk
 
