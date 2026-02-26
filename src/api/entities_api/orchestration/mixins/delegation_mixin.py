@@ -107,7 +107,7 @@ class DelegationMixin:
         )
 
     # ------------------------------------------------------------------
-    # HELPER: Bridges blocking generators to async loop (Memory Leak Fix)
+    # HELPER: Bridges blocking generators to async loop (Fixes uvloop error)
     # ------------------------------------------------------------------
 
     async def _stream_sync_generator(
@@ -115,44 +115,30 @@ class DelegationMixin:
     ) -> AsyncGenerator[Any, None]:
         """
         Runs a synchronous generator in a background thread and yields items
-        asynchronously. Includes strict cleanup to prevent pending task destruction.
+        asynchronously. Required because the SDK's synchronous_inference_stream
+        uses blocking iteration which is incompatible with uvloop directly.
         """
         queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
-        stop_event = threading.Event()
 
         def producer():
             try:
                 for item in generator_func(*args, **kwargs):
-                    if stop_event.is_set():
-                        break
                     loop.call_soon_threadsafe(queue.put_nowait, item)
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # Sentinel
             except Exception as e:
                 LOG.error(f"🧵[THREAD-ERR] {e}")
                 loop.call_soon_threadsafe(queue.put_nowait, e)
 
-        thread = threading.Thread(target=producer, daemon=True)
-        thread.start()
+        threading.Thread(target=producer, daemon=True).start()
 
-        try:
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                if isinstance(item, Exception):
-                    raise item
-                yield item
-        except GeneratorExit:
-            # The consumer stopped listening early (e.g. client disconnected)
-            LOG.debug("🛑 [_stream_sync_generator] Generator exited cleanly early.")
-            pass
-        except asyncio.CancelledError:
-            LOG.debug("🛑 [_stream_sync_generator] Task was cancelled.")
-            raise
-        finally:
-            # Tell the background thread to stop iterating and clean up
-            stop_event.set()
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
 
     # ------------------------------------------------------------------
     # HELPER: Poll run status until terminal state or timeout.
@@ -182,11 +168,7 @@ class DelegationMixin:
                     run_id=run_id,
                 )
 
-                status_value = (
-                    run.status.value
-                    if hasattr(run.status, "value")
-                    else str(run.status)
-                )
+                status_value = run.status.value if hasattr(run.status, "value") else str(run.status)
 
                 LOG.critical(
                     "██████ [DELEGATE_POLL] run_id=%s status=%s elapsed=%.1fs ██████",
@@ -210,9 +192,7 @@ class DelegationMixin:
             elapsed += poll_interval
 
         LOG.error("❌ [DELEGATE_POLL] run_id=%s timed out after %ss.", run_id, timeout)
-        raise asyncio.TimeoutError(
-            f"Worker run {run_id} did not complete within {timeout}s"
-        )
+        raise asyncio.TimeoutError(f"Worker run {run_id} did not complete within {timeout}s")
 
     # ------------------------------------------------------------------
     # HELPER: Poll action status until terminal state or timeout.
@@ -263,9 +243,7 @@ class DelegationMixin:
                     return status_value == "completed"
 
             except Exception as e:
-                LOG.warning(
-                    "⚠️[ENGINEER_DELEGATE] Poll error for action %s: %s", action_id, e
-                )
+                LOG.warning("⚠️[ENGINEER_DELEGATE] Poll error for action %s: %s", action_id, e)
 
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
@@ -450,14 +428,10 @@ class DelegationMixin:
                 continue
 
             # 🛑 GUARD 2: Drop tool call argument frames
-            if getattr(event, "tool_calls", None) or getattr(
-                event, "function_call", None
-            ):
+            if getattr(event, "tool_calls", None) or getattr(event, "function_call", None):
                 continue
 
-            chunk_content = getattr(event, "content", None) or getattr(
-                event, "text", None
-            )
+            chunk_content = getattr(event, "content", None) or getattr(event, "text", None)
             chunk_reasoning = getattr(event, "reasoning", None)
 
             if chunk_reasoning:
@@ -505,9 +479,7 @@ class DelegationMixin:
         else:
             args = arguments_dict
 
-        yield self._research_status(
-            "Initializing delegation worker...", "in_progress", run_id
-        )
+        yield self._research_status("Initializing delegation worker...", "in_progress", run_id)
 
         action = None
         try:
@@ -546,9 +518,7 @@ class DelegationMixin:
                 ephemeral_worker.id, ephemeral_thread.id
             )
 
-            yield self._research_status(
-                "Worker active. Streaming...", "in_progress", run_id
-            )
+            yield self._research_status("Worker active. Streaming...", "in_progress", run_id)
 
             LOG.info(f"🔄[SUPERVISORS_THREAD_ID]: {thread_id}")
             LOG.info(f"🔄[WORKERS_THREAD_ID]: {self._research_worker_thread}")
@@ -572,14 +542,10 @@ class DelegationMixin:
                     final_run_status,
                 )
             except asyncio.TimeoutError:
-                LOG.error(
-                    "⏳ [RESEARCH_DELEGATE] Worker run timed out. Attempting fetch anyway."
-                )
+                LOG.error("⏳ [RESEARCH_DELEGATE] Worker run timed out. Attempting fetch anyway.")
                 execution_had_error = True
 
-            final_content = await self._fetch_worker_final_report(
-                thread_id=ephemeral_thread.id
-            )
+            final_content = await self._fetch_worker_final_report(thread_id=ephemeral_thread.id)
 
             LOG.critical(
                 "██████ [FINAL_THREAD_CONTENT_SUBMITTED_BY_RESEARCH_WORKER]=%s ██████",
@@ -620,9 +586,7 @@ class DelegationMixin:
 
         finally:
             if ephemeral_worker:
-                thread_id_to_clean = (
-                    ephemeral_thread.id if ephemeral_thread else "unknown_thread"
-                )
+                thread_id_to_clean = ephemeral_thread.id if ephemeral_thread else "unknown_thread"
                 await self._ephemeral_clean_up(
                     ephemeral_worker.id,
                     thread_id_to_clean,
@@ -667,15 +631,8 @@ class DelegationMixin:
         else:
             args = arguments_dict
 
-        hostname = args.get("hostname", "UNKNOWN")
-        commands = args.get("commands", [])
-        task_context = args.get("task_context", "No context provided.")
-        flag_criteria = args.get("flag_criteria", "None specified.")
-
         # 2. Yield Initial Status
-        yield self._engineer_status(
-            f"Initializing Junior Engineer for {hostname}...", "in_progress", run_id
-        )
+        yield self._engineer_status("Initializing Junior Engineer...", "in_progress", run_id)
 
         # 3. Create Action (DB)
         action = None
@@ -691,35 +648,12 @@ class DelegationMixin:
         except Exception as e:
             LOG.error(f"❌ [ENGINEER_DELEGATE] Action creation failed: {e}")
 
-        # 3.5 Reject invalid delegations immediately (Breaks the loop if Senior hallucinates empty commands)
-        if not commands:
-            LOG.error(
-                f"❌ [ENGINEER_DELEGATE] Senior delegated task to {hostname} with NO commands."
-            )
-            error_msg = f"⚠️ DELEGATION REJECTED: You assigned a task to {hostname} but provided an empty command list. Fix your Phase 1/2 commands and try again."
-            await self.submit_tool_output(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-                tool_call_id=tool_call_id,
-                content=error_msg,
-                action=action,
-                is_error=True,
-            )
-            if action:
-                await asyncio.to_thread(
-                    self.project_david_client.actions.update_action,
-                    action_id=action.id,
-                    status=StatusEnum.failed.value,
-                )
-            yield self._engineer_status(
-                "Delegation rejected: Empty commands.", "error", run_id
-            )
-            return
-
         ephemeral_junior = None
         execution_had_error = False
         ephemeral_run = None
         ephemeral_thread = None
+
+        # Track the intercepted action so we can poll it in step 6.5
         intercepted_action_id: Optional[str] = None
 
         try:
@@ -733,16 +667,11 @@ class DelegationMixin:
                 )
             ephemeral_thread = self._research_worker_thread
 
-            # FORCE THE Llama MODEL TO USE TOOLS INSTEAD OF OUTPUTTING NEWLINES
             prompt = (
-                f"### NEW INCIDENT TASK DELEGATION\n\n"
-                f"**TARGET DEVICE:** {hostname}\n"
-                f"**COMMANDS TO EXECUTE:**\n{json.dumps(commands, indent=2)}\n\n"
-                f"**TASK CONTEXT:**\n{task_context}\n\n"
-                f"**FLAG CRITERIA:**\n{flag_criteria}\n\n"
-                f"**CRITICAL INSTRUCTION:**\n"
-                f"You MUST immediately call the `execute_network_command` tool using the exact commands listed above. "
-                f"Do NOT output conversational text or a newline first. Invoke the tool immediately."
+                f"TARGET DEVICE: {args.get('hostname', 'NOT SPECIFIED')}\n"
+                f"COMMANDS:\n{json.dumps(args.get('commands',[]), indent=2)}\n"
+                f"TASK CONTEXT: {args.get('task_context', 'No context provided.')}\n"
+                f"FLAG IF: {args.get('flag_criteria', 'No specific flag criteria provided.')}"
             )
 
             msg = await self.create_ephemeral_message(
@@ -753,7 +682,7 @@ class DelegationMixin:
             )
 
             yield self._engineer_status(
-                f"Junior Engineer active on {hostname}. Streaming...",
+                f"Junior Engineer active on {args.get('hostname', '?')}. Streaming...",
                 "in_progress",
                 run_id,
             )
@@ -773,11 +702,12 @@ class DelegationMixin:
 
             LOG.critical("🎬 JUNIOR ENGINEER STREAM STARTING — TURN 1")
 
-            # 6. Stream Turn 1
+            # 6. Stream Turn 1 — intercept the tool call, yield it for developer handling
             async for event in self._stream_sync_generator(
                 sync_stream.stream_events,
                 model=self._delegation_model,
             ):
+                # 🛑 GUARD 1: Exclude Status/System Events
                 if (
                     hasattr(event, "tool")
                     or hasattr(event, "status")
@@ -785,14 +715,14 @@ class DelegationMixin:
                 ):
                     continue
 
-                if getattr(event, "tool_calls", None) or getattr(
-                    event, "function_call", None
-                ):
+                # 🛑 GUARD 2: Exclude Tool Call Argument Frames
+                if getattr(event, "tool_calls", None) or getattr(event, "function_call", None):
                     continue
 
-                # ✅ INTERCEPT
+                # ✅ INTERCEPT: Capture the action_id and yield the event for
+                #    the developer's backend to execute via execute_intercepted().
                 if isinstance(event, ToolCallRequestEvent):
-                    intercepted_action_id = event.action_id
+                    intercepted_action_id = event.action_id  # ← capture for polling
                     LOG.info(
                         "🔧[ENGINEER_DELEGATE] Intercepted tool call: %s | action_id: %s",
                         event.tool_name,
@@ -814,9 +744,7 @@ class DelegationMixin:
                     )
                     continue
 
-                chunk_content = getattr(event, "content", None) or getattr(
-                    event, "text", None
-                )
+                chunk_content = getattr(event, "content", None) or getattr(event, "text", None)
                 chunk_reasoning = getattr(event, "reasoning", None)
 
                 if chunk_reasoning:
@@ -844,12 +772,8 @@ class DelegationMixin:
                     )
 
             # ------------------------------------------------------------------
-            # 6.5 SECOND TURN
+            # 6.5 SECOND TURN — only fires if a tool was intercepted
             # ------------------------------------------------------------------
-            tool_completed = (
-                False  # Track this so Step 8 knows if the network part worked
-            )
-
             if intercepted_action_id:
                 yield self._engineer_status(
                     "Waiting for local tool execution to complete...",
@@ -863,7 +787,7 @@ class DelegationMixin:
 
                 if tool_completed:
                     LOG.info(
-                        "✅ [ENGINEER_DELEGATE] Action %s confirmed complete.",
+                        "✅ [ENGINEER_DELEGATE] Action %s confirmed complete. Triggering Turn 2.",
                         intercepted_action_id,
                     )
                     yield self._engineer_status(
@@ -872,21 +796,24 @@ class DelegationMixin:
                         run_id,
                     )
 
-                    # STRICTER TURN 2 PROMPT FOR LLAMA
+                    # Inject an analysis prompt — gives the Junior clear direction
+                    # for Turn 2 without needing it to re-examine its own tool call.
                     analysis_prompt = (
-                        f"The network command has been successfully executed on {hostname}. "
+                        f"The network command has been executed on {args.get('hostname', 'the target device')}. "
                         f"The CLI output has been returned as a tool result in your context.\n\n"
-                        f"**MANDATORY INSTRUCTIONS:**\n"
-                        f"1. You MUST evaluate the output against the flag criteria: {flag_criteria}\n"
-                        f"2. You MUST use the `append_scratchpad` tool to log the ✅ [RAW DATA] and any 🚩 [FLAG]s.\n"
-                        f"3. You MUST reply with a short text message confirming you have updated the scratchpad.\n"
-                        f"Do NOT output just a newline."
+                        f"Please now:\n"
+                        f"1. Carefully analyse the command output.\n"
+                        f"2. Identify any issues, anomalies, or items matching the flag criteria: "
+                        f"{args.get('flag_criteria', 'any notable findings')}.\n"
+                        f"3. Provide a concise diagnostic report summarising your findings "
+                        f"and any recommended next steps."
                     )
 
                     analysis_msg = await self.create_ephemeral_message(
                         ephemeral_thread.id, analysis_prompt, ephemeral_junior.id
                     )
 
+                    # New run — tool result + analysis prompt are now last on the thread
                     ephemeral_run = await self.create_ephemeral_run(
                         ephemeral_junior.id, ephemeral_thread.id
                     )
@@ -948,12 +875,13 @@ class DelegationMixin:
 
                 else:
                     LOG.error(
-                        "❌ [ENGINEER_DELEGATE] Action %s did not complete in time.",
+                        "❌ [ENGINEER_DELEGATE] Action %s did not complete in time. "
+                        "Skipping Turn 2.",
                         intercepted_action_id,
                     )
                     execution_had_error = True
 
-            # 7. Wait for completion
+            # 7. Wait for the active run (Turn 1 if no intercept, Turn 2 if intercept) to complete
             yield self._engineer_status(
                 "Junior processing. Waiting for completion...", "in_progress", run_id
             )
@@ -968,43 +896,25 @@ class DelegationMixin:
                     final_run_status,
                 )
             except asyncio.TimeoutError:
-                LOG.error("⏳ [ENGINEER_DELEGATE] Junior run timed out.")
+                LOG.error("⏳ [ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway.")
                 execution_had_error = True
 
             # 8. Fetch final report
-            final_content = await self._fetch_worker_final_report(
-                thread_id=ephemeral_thread.id
+            final_content = await self._fetch_worker_final_report(thread_id=ephemeral_thread.id)
+
+            LOG.critical(
+                "██████[FINAL_THREAD_CONTENT_SUBMITTED_BY_JUNIOR_ENGINEER]=%s ██████",
+                final_content,
             )
 
-            LOG.critical("██████[FINAL_CONTENT_BY_JUNIOR]=%s ██████", final_content)
-
-            # --- SMART ANTI-LOOP MECHANISM ---
             if not final_content:
-                if intercepted_action_id and tool_completed:
-                    # The tool actually ran, but the Llama model forgot to say "I'm done" in Turn 2.
-                    LOG.info(
-                        "⚠️ [ENGINEER_DELEGATE] Junior output no text in Turn 2, but tool succeeded. Synthesizing success."
-                    )
-                    final_content = (
-                        f"✅ Command executed successfully on {hostname}. "
-                        f"Please call `read_scratchpad` to view the CLI output and proceed with analysis."
-                    )
-                    execution_had_error = (
-                        False  # Do NOT fail the run, the data is there!
-                    )
-                else:
-                    # The tool NEVER ran. Llama just output \n in Turn 1.
-                    LOG.critical(
-                        "██████[ENGINEER_DELEGATE_TOTAL_FAILURE] Junior completely failed to call the network tool. ██████"
-                    )
-                    final_content = (
-                        f"⚠️ JUNIOR FORMATTING ERROR: The Junior Engineer failed to invoke the CLI tool for {hostname}. "
-                        f"This is an AI formatting error, NOT a network reachability issue. The device might still be up. "
-                        f"Please retry delegating to {hostname}."
-                    )
-                    execution_had_error = True
+                LOG.critical(
+                    "██████[ENGINEER_DELEGATE_TOTAL_FAILURE] No confirmation generated by Junior Engineer ██████"
+                )
+                final_content = "No confirmation generated by Junior Engineer."
+                execution_had_error = True
 
-            # 9. Submit output
+            # 9. Submit tool output back to supervisor
             await self.submit_tool_output(
                 thread_id=thread_id,
                 assistant_id=assistant_id,
@@ -1014,6 +924,7 @@ class DelegationMixin:
                 is_error=execution_had_error,
             )
 
+            # 10. Update action status
             if action:
                 await asyncio.to_thread(
                     self.project_david_client.actions.update_action,
@@ -1032,9 +943,7 @@ class DelegationMixin:
 
         finally:
             if ephemeral_junior:
-                thread_id_to_clean = (
-                    ephemeral_thread.id if ephemeral_thread else "unknown_thread"
-                )
+                thread_id_to_clean = ephemeral_thread.id if ephemeral_thread else "unknown_thread"
                 await self._ephemeral_clean_up(
                     ephemeral_junior.id,
                     thread_id_to_clean,
