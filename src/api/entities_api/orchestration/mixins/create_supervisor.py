@@ -1,7 +1,8 @@
 # src/api/entities_api/orchestration/mixins/create_supervisor.py
 from projectdavid import Entity
 
-from src.api.entities_api.constants.research_supervisor import SUPERVISOR_TOOLS
+from entities_api.platform_tools.tool_reigistry.research_supervisor import \
+    SUPERVISOR_TOOLS
 from src.api.entities_api.orchestration.instructions.assembler import \
     assemble_instructions
 from src.api.entities_api.orchestration.instructions.include_lists import \
