@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -449,11 +450,16 @@ class OrchestratorCore(
         2. Check for tool calls.
         3. If NO tools -> Finish.
         4. If tools -> Execute tools -> Loop back to Step 1 (Recursion).
+
+        Run object lifecycle writes (items 1, 2, 3):
+        - started_at   : written on Turn 1 alongside current_turn=1
+        - current_turn : written on every turn
+        - completed_at : written on clean text-only exit
+        - failed_at    : written on stream exception or max-turns failsafe
+        - last_error   : written on stream exception or outer exception
+        - incomplete_details : written on max-turns failsafe
         """
 
-        # Capture original identity BEFORE stream() can perform any swap.
-        # process_conversation owns the full identity lifecycle — stream() must
-        # not restore it in its own finally block.
         _original_assistant_id = assistant_id
 
         await self._ensure_config_loaded()
@@ -468,6 +474,25 @@ class OrchestratorCore(
                 LOG.info(f"ORCHESTRATOR ▸ Turn {turn_count} start [Run: {run_id}]")
 
                 # ------------------------------------------------------------------
+                # ITEM 1 & 3 — Stamp started_at on Turn 1; current_turn every turn.
+                # Both writes are batched into a single DB call on Turn 1 to avoid
+                # an extra round trip.
+                # ------------------------------------------------------------------
+                try:
+                    fields = {"current_turn": turn_count}
+                    if turn_count == 1:
+                        fields["started_at"] = int(time.time())
+                    await asyncio.to_thread(
+                        self.project_david_client.runs.update_run_fields,
+                        run_id,
+                        **fields,
+                    )
+                except Exception as lifecycle_exc:
+                    LOG.warning(
+                        f"ORCHESTRATOR ▸ Failed to write turn state (non-fatal): {lifecycle_exc}"
+                    )
+
+                # ------------------------------------------------------------------
                 # 1. RESET INTERNAL TURN STATE
                 # ------------------------------------------------------------------
                 self.set_tool_response_state(False)
@@ -476,8 +501,6 @@ class OrchestratorCore(
 
                 # ------------------------------------------------------------------
                 # 2. INFERENCE TURN (STREAM MODEL OUTPUT)
-                # After this loop completes, self.assistant_id may have been swapped
-                # to the supervisor ID by _handle_deep_research_identity_swap().
                 # ------------------------------------------------------------------
                 try:
                     async for chunk in self.stream(
@@ -496,6 +519,20 @@ class OrchestratorCore(
                     LOG.error(
                         f"ORCHESTRATOR ▸ Turn {turn_count} stream failed: {stream_exc}"
                     )
+
+                    # ITEM 2 — persist stream failure before yielding error chunk
+                    try:
+                        await asyncio.to_thread(
+                            self.project_david_client.runs.update_run_fields,
+                            run_id,
+                            last_error=str(stream_exc),
+                            failed_at=int(time.time()),
+                        )
+                    except Exception as lifecycle_exc:
+                        LOG.warning(
+                            f"ORCHESTRATOR ▸ Failed to write stream error (non-fatal): {lifecycle_exc}"
+                        )
+
                     yield json.dumps(
                         {"type": "error", "content": f"Stream failure: {stream_exc}"}
                     )
@@ -508,6 +545,18 @@ class OrchestratorCore(
 
                 if not batch:
                     LOG.info(f"ORCHESTRATOR ▸ Turn {turn_count} completed with text.")
+
+                    # ITEM 1 — clean exit: stamp completed_at
+                    try:
+                        await asyncio.to_thread(
+                            self.project_david_client.runs.update_run_fields,
+                            run_id,
+                            completed_at=int(time.time()),
+                        )
+                    except Exception as lifecycle_exc:
+                        LOG.warning(
+                            f"ORCHESTRATOR ▸ Failed to write completed_at (non-fatal): {lifecycle_exc}"
+                        )
                     break
 
                 # ------------------------------------------------------------------
@@ -531,14 +580,11 @@ class OrchestratorCore(
 
                 # ------------------------------------------------------------------
                 # 5. TOOL EXECUTION TURN
-                # self.assistant_id is read HERE — after stream() has completed its
-                # identity swap — so it correctly reflects the supervisor or worker
-                # ID rather than the original assistant ID.
                 # ------------------------------------------------------------------
                 async for chunk in self.process_tool_calls(
                     thread_id=thread_id,
                     run_id=run_id,
-                    assistant_id=self.assistant_id,  # ← live post-swap identity
+                    assistant_id=self.assistant_id,
                     tool_call_id=self._current_tool_call_id,
                     model=model,
                     api_key=api_key,
@@ -561,19 +607,53 @@ class OrchestratorCore(
                 return
 
             # ----------------------------------------------------------------------
-            # FAILSAFE — reachable only when the while condition expires naturally
+            # FAILSAFE — max turns exceeded
             # ----------------------------------------------------------------------
             if turn_count >= max_turns:
                 LOG.error("ORCHESTRATOR ▸ Max turns reached.")
+
+                # ITEMS 1 & 2 — stamp failed_at and incomplete_details
+                try:
+                    await asyncio.to_thread(
+                        self.project_david_client.runs.update_run_fields,
+                        run_id,
+                        failed_at=int(time.time()),
+                        incomplete_details=(
+                            f"Max turns ({max_turns}) reached without clean completion. "
+                            f"Last tool batch size: "
+                            f"{len(self.get_function_call_state() or [])}."
+                        ),
+                    )
+                except Exception as lifecycle_exc:
+                    LOG.warning(
+                        f"ORCHESTRATOR ▸ Failed to write max-turns state (non-fatal): {lifecycle_exc}"
+                    )
+
                 yield json.dumps(
                     {"type": "error", "content": "Maximum conversation turns exceeded"}
                 )
 
+        except Exception as exc:
+            LOG.error(f"Stream Exception: {exc}")
+
+            # ITEM 2 — outer exception: persist last_error and failed_at
+            try:
+                await asyncio.to_thread(
+                    self.project_david_client.runs.update_run_fields,
+                    run_id,
+                    last_error=str(exc),
+                    failed_at=int(time.time()),
+                )
+            except Exception as lifecycle_exc:
+                LOG.warning(
+                    f"ORCHESTRATOR ▸ Failed to write exception state (non-fatal): {lifecycle_exc}"
+                )
+
+            yield json.dumps({"type": "error", "content": str(exc), "run_id": run_id})
+
         finally:
             # ------------------------------------------------------------------
-            # IDENTITY TEARDOWN
-            # Owned exclusively here so cleanup never races ahead of tool dispatch.
-            # stream() is responsible ONLY for stopping its cancellation monitor.
+            # IDENTITY TEARDOWN — unchanged
             # ------------------------------------------------------------------
             if self.ephemeral_supervisor_id:
                 await self._ephemeral_clean_up(
