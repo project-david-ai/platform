@@ -107,7 +107,7 @@ class DelegationMixin:
         )
 
     # ------------------------------------------------------------------
-    # HELPER: Bridges blocking generators to async loop (Fixes uvloop error)
+    # HELPER: Bridges blocking generators to async loop (Memory Leak Fix)
     # ------------------------------------------------------------------
 
     async def _stream_sync_generator(
@@ -115,30 +115,44 @@ class DelegationMixin:
     ) -> AsyncGenerator[Any, None]:
         """
         Runs a synchronous generator in a background thread and yields items
-        asynchronously. Required because the SDK's synchronous_inference_stream
-        uses blocking iteration which is incompatible with uvloop directly.
+        asynchronously. Includes strict cleanup to prevent pending task destruction.
         """
         queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
+        stop_event = threading.Event()
 
         def producer():
             try:
                 for item in generator_func(*args, **kwargs):
+                    if stop_event.is_set():
+                        break
                     loop.call_soon_threadsafe(queue.put_nowait, item)
                 loop.call_soon_threadsafe(queue.put_nowait, None)  # Sentinel
             except Exception as e:
                 LOG.error(f"🧵[THREAD-ERR] {e}")
                 loop.call_soon_threadsafe(queue.put_nowait, e)
 
-        threading.Thread(target=producer, daemon=True).start()
+        thread = threading.Thread(target=producer, daemon=True)
+        thread.start()
 
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            if isinstance(item, Exception):
-                raise item
-            yield item
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        except GeneratorExit:
+            # The consumer stopped listening early (e.g. client disconnected)
+            LOG.debug("🛑 [_stream_sync_generator] Generator exited cleanly early.")
+            pass
+        except asyncio.CancelledError:
+            LOG.debug("🛑 [_stream_sync_generator] Task was cancelled.")
+            raise
+        finally:
+            # Tell the background thread to stop iterating and clean up
+            stop_event.set()
 
     # ------------------------------------------------------------------
     # HELPER: Poll run status until terminal state or timeout.
@@ -832,6 +846,10 @@ class DelegationMixin:
             # ------------------------------------------------------------------
             # 6.5 SECOND TURN
             # ------------------------------------------------------------------
+            tool_completed = (
+                False  # Track this so Step 8 knows if the network part worked
+            )
+
             if intercepted_action_id:
                 yield self._engineer_status(
                     "Waiting for local tool execution to complete...",
@@ -854,15 +872,15 @@ class DelegationMixin:
                         run_id,
                     )
 
+                    # STRICTER TURN 2 PROMPT FOR LLAMA
                     analysis_prompt = (
-                        f"The network command has been executed on {hostname}. "
+                        f"The network command has been successfully executed on {hostname}. "
                         f"The CLI output has been returned as a tool result in your context.\n\n"
-                        f"Please now:\n"
-                        f"1. Carefully analyse the command output.\n"
-                        f"2. Identify any issues, anomalies, or items matching the flag criteria: "
-                        f"{flag_criteria}.\n"
-                        f"3. Append your findings to the scratchpad using `append_scratchpad`.\n"
-                        f"4. Send a single line of text confirming you are done."
+                        f"**MANDATORY INSTRUCTIONS:**\n"
+                        f"1. You MUST evaluate the output against the flag criteria: {flag_criteria}\n"
+                        f"2. You MUST use the `append_scratchpad` tool to log the ✅ [RAW DATA] and any 🚩 [FLAG]s.\n"
+                        f"3. You MUST reply with a short text message confirming you have updated the scratchpad.\n"
+                        f"Do NOT output just a newline."
                     )
 
                     analysis_msg = await self.create_ephemeral_message(
@@ -960,16 +978,31 @@ class DelegationMixin:
 
             LOG.critical("██████[FINAL_CONTENT_BY_JUNIOR]=%s ██████", final_content)
 
-            # ANTI-LOOP MECHANISM: If junior fails, explicitly tell the Senior not to retry identically
+            # --- SMART ANTI-LOOP MECHANISM ---
             if not final_content:
-                LOG.critical(
-                    "██████[ENGINEER_DELEGATE_TOTAL_FAILURE] Junior generated nothing. ██████"
-                )
-                final_content = (
-                    f"⚠️ FATAL JUNIOR ERROR: The Junior Engineer failed to execute the commands on {hostname} "
-                    f"and returned an empty response. Do NOT retry the exact same delegation. Re-evaluate your plan."
-                )
-                execution_had_error = True
+                if intercepted_action_id and tool_completed:
+                    # The tool actually ran, but the Llama model forgot to say "I'm done" in Turn 2.
+                    LOG.info(
+                        "⚠️ [ENGINEER_DELEGATE] Junior output no text in Turn 2, but tool succeeded. Synthesizing success."
+                    )
+                    final_content = (
+                        f"✅ Command executed successfully on {hostname}. "
+                        f"Please call `read_scratchpad` to view the CLI output and proceed with analysis."
+                    )
+                    execution_had_error = (
+                        False  # Do NOT fail the run, the data is there!
+                    )
+                else:
+                    # The tool NEVER ran. Llama just output \n in Turn 1.
+                    LOG.critical(
+                        "██████[ENGINEER_DELEGATE_TOTAL_FAILURE] Junior completely failed to call the network tool. ██████"
+                    )
+                    final_content = (
+                        f"⚠️ JUNIOR FORMATTING ERROR: The Junior Engineer failed to invoke the CLI tool for {hostname}. "
+                        f"This is an AI formatting error, NOT a network reachability issue. The device might still be up. "
+                        f"Please retry delegating to {hostname}."
+                    )
+                    execution_had_error = True
 
             # 9. Submit output
             await self.submit_tool_output(
