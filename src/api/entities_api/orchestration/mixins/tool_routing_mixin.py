@@ -361,6 +361,37 @@ class ToolRoutingMixin:
                     yield chunk
 
             # ---------------------------------------------------------
+            # BATFISH / NETWORK ANALYSIS TOOLS
+            # These are the only Batfish tools exposed to the junior
+            # network engineer agent. Snapshot lifecycle operations
+            # (refresh, get, list, delete) are SDK-only and are NOT
+            # routed here — they are called directly by platform code.
+            # ---------------------------------------------------------
+            elif name == "run_batfish_tool":
+                async for chunk in self.handle_run_batfish_tool(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                    user_id=run_user_id,
+                ):
+                    yield chunk
+
+            elif name == "run_all_batfish_tools":
+                async for chunk in self.handle_run_all_batfish_tools(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                    user_id=run_user_id,
+                ):
+                    yield chunk
+
+            # ---------------------------------------------------------
             # 2. SYSTEM TOOLS (Dynamic/Legacy Routing)
             # ---------------------------------------------------------
             elif name in PLATFORM_TOOLS:
