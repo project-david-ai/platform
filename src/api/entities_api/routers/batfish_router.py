@@ -9,13 +9,8 @@ from sqlalchemy.orm import Session
 from src.api.entities_api.dependencies import get_api_key, get_db
 from src.api.entities_api.models.models import ApiKey as ApiKeyModel
 from src.api.entities_api.services.batfish_service import (
-    TOOLS,
-    BatfishService,
-    BatfishServiceError,
-    BatfishSnapshotConflictError,
-    BatfishSnapshotNotFoundError,
-    BatfishToolError,
-)
+    TOOLS, BatfishService, BatfishServiceError, BatfishSnapshotConflictError,
+    BatfishSnapshotNotFoundError, BatfishToolError)
 
 router = APIRouter()
 logging_utility = LoggingUtility()

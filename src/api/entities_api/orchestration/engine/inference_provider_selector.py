@@ -5,9 +5,11 @@ from typing import Any, Type
 from projectdavid_common.constants.ai_model_map import MODEL_MAP
 from projectdavid_common.utilities.logging_service import LoggingUtility
 
-from entities_api.orchestration.engine.inference_arbiter import InferenceArbiter
+from entities_api.orchestration.engine.inference_arbiter import \
+    InferenceArbiter
 from entities_api.orchestration.handlers.hb_handler import HyperbolicHandler
-from entities_api.orchestration.handlers.together_handler import TogetherAIHandler
+from entities_api.orchestration.handlers.together_handler import \
+    TogetherAIHandler
 
 # TODO: Migrate workers to Mixin architecture
 # from src.api.entities_api.inference.azure.azure_handler import AzureHandler

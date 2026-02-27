@@ -7,7 +7,6 @@ from fastapi import HTTPException
 from projectdavid_common import UtilsInterface, ValidationInterface
 
 from src.api.entities_api.db.database import SessionLocal
-
 # FIX: Removed Tool from imports.
 from src.api.entities_api.models.models import Message, Thread
 from src.api.entities_api.services.logging_service import LoggingUtility

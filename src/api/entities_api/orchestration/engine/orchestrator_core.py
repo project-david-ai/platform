@@ -23,41 +23,35 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 # IMPORTS
 # -------------------------------------------------------------------------
 from projectdavid import StreamEvent
-from projectdavid_common import ToolValidator  # Assumed available based on snippet
+from projectdavid_common import \
+    ToolValidator  # Assumed available based on snippet
 from projectdavid_common.constants.plaform_tools import PLATFORM_TOOLS
 from projectdavid_common.utilities.logging_service import LoggingUtility
 
 from entities_api.cache.assistant_cache import AssistantCache
 from entities_api.dependencies import get_redis_sync
-from entities_api.platform_tools.delegated_model_map.delegation_model_map import (
-    get_delegated_model,
-)
+from entities_api.platform_tools.delegated_model_map.delegation_model_map import \
+    get_delegated_model
 from entities_api.utils.assistant_manager import AssistantManager
-
 # Mixins
-from src.api.entities_api.orchestration.mixins.code_execution_mixin import (
-    CodeExecutionMixin,
-)
-from src.api.entities_api.orchestration.mixins.consumer_tool_handlers_mixin import (
-    ConsumerToolHandlersMixin,
-)
-from src.api.entities_api.orchestration.mixins.conversation_context_mixin import (
-    ConversationContextMixin,
-)
-from src.api.entities_api.orchestration.mixins.json_utils_mixin import JsonUtilsMixin
-from src.api.entities_api.orchestration.mixins.platform_tool_handlers_mixin import (
-    PlatformToolHandlersMixin,
-)
-from src.api.entities_api.orchestration.mixins.service_registry_mixin import (
-    ServiceRegistryMixin,
-)
-from src.api.entities_api.orchestration.mixins.shell_execution_mixin import (
-    ShellExecutionMixin,
-)
-from src.api.entities_api.orchestration.mixins.streaming_mixin import StreamingMixin
-from src.api.entities_api.orchestration.mixins.tool_routing_mixin import (
-    ToolRoutingMixin,
-)
+from src.api.entities_api.orchestration.mixins.code_execution_mixin import \
+    CodeExecutionMixin
+from src.api.entities_api.orchestration.mixins.consumer_tool_handlers_mixin import \
+    ConsumerToolHandlersMixin
+from src.api.entities_api.orchestration.mixins.conversation_context_mixin import \
+    ConversationContextMixin
+from src.api.entities_api.orchestration.mixins.json_utils_mixin import \
+    JsonUtilsMixin
+from src.api.entities_api.orchestration.mixins.platform_tool_handlers_mixin import \
+    PlatformToolHandlersMixin
+from src.api.entities_api.orchestration.mixins.service_registry_mixin import \
+    ServiceRegistryMixin
+from src.api.entities_api.orchestration.mixins.shell_execution_mixin import \
+    ShellExecutionMixin
+from src.api.entities_api.orchestration.mixins.streaming_mixin import \
+    StreamingMixin
+from src.api.entities_api.orchestration.mixins.tool_routing_mixin import \
+    ToolRoutingMixin
 
 LOG = LoggingUtility()
 

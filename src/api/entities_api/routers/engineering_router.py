@@ -2,10 +2,12 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from projectdavid_common.schemas.device_ingest_scema import InventoryIngestRequest
+from projectdavid_common.schemas.device_ingest_scema import \
+    InventoryIngestRequest
 from projectdavid_common.utilities.logging_service import LoggingUtility
 
-from src.api.entities_api.dependencies import get_api_key, get_inventory_service
+from src.api.entities_api.dependencies import (get_api_key,
+                                               get_inventory_service)
 from src.api.entities_api.models.models import ApiKey as ApiKeyModel
 from src.api.entities_api.services.inventory_service import InventoryService
 
