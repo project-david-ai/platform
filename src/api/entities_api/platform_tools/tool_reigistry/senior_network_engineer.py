@@ -1,13 +1,18 @@
-from src.api.entities_api.platform_tools.definitions.delegation.delegate_engineer_task import \
-    delegate_engineer_task
-from src.api.entities_api.platform_tools.definitions.network_inventory.get_device_info import \
-    get_device_info
-from src.api.entities_api.platform_tools.definitions.network_inventory.search_inventory_by_group import \
-    search_inventory_by_group
-from src.api.entities_api.platform_tools.definitions.scratch_pad.read_scratchpad import \
-    read_scratchpad
-from src.api.entities_api.platform_tools.definitions.scratch_pad.update_scratchpad import \
-    update_scratchpad
+from src.api.entities_api.platform_tools.definitions.delegation.delegate_engineer_task import (
+    delegate_engineer_task,
+)
+from src.api.entities_api.platform_tools.definitions.network_inventory.get_device_info import (
+    get_device_info,
+)
+from src.api.entities_api.platform_tools.definitions.network_inventory.search_inventory_by_group import (
+    search_inventory_by_group,
+)
+from src.api.entities_api.platform_tools.definitions.scratch_pad.read_scratchpad import (
+    read_scratchpad,
+)
+from src.api.entities_api.platform_tools.definitions.scratch_pad.update_scratchpad import (
+    update_scratchpad,
+)
 
 # ============================
 # Senior Network Engineer

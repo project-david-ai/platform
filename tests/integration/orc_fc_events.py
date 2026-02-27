@@ -15,10 +15,18 @@ import time  # <--- Added for timing
 
 from config_orc_fc import config
 from dotenv import load_dotenv
+
 # Import the new Event classes
-from projectdavid import (ComputerExecutionOutputEvent, ContentEvent,
-                          DecisionEvent, Entity, HotCodeEvent, ReasoningEvent,
-                          StatusEvent, ToolCallRequestEvent)
+from projectdavid import (
+    ComputerExecutionOutputEvent,
+    ContentEvent,
+    DecisionEvent,
+    Entity,
+    HotCodeEvent,
+    ReasoningEvent,
+    StatusEvent,
+    ToolCallRequestEvent,
+)
 
 # ------------------------------------------------------------------
 # 0. CONFIGURATION & SDK INIT

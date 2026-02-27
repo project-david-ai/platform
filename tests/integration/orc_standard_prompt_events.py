@@ -12,6 +12,7 @@ import time
 
 from config_orc_fc import config
 from dotenv import load_dotenv
+
 # Import only what we need for text generation
 from projectdavid import ContentEvent, Entity, ReasoningEvent
 

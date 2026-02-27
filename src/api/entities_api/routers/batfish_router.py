@@ -9,8 +9,13 @@ from sqlalchemy.orm import Session
 from src.api.entities_api.dependencies import get_api_key, get_db
 from src.api.entities_api.models.models import ApiKey as ApiKeyModel
 from src.api.entities_api.services.batfish_service import (
-    TOOLS, BatfishService, BatfishServiceError, BatfishSnapshotConflictError,
-    BatfishSnapshotNotFoundError, BatfishToolError)
+    TOOLS,
+    BatfishService,
+    BatfishServiceError,
+    BatfishSnapshotConflictError,
+    BatfishSnapshotNotFoundError,
+    BatfishToolError,
+)
 
 router = APIRouter()
 logging_utility = LoggingUtility()
@@ -156,6 +161,37 @@ def delete_snapshot(
     except BatfishSnapshotNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except BatfishServiceError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/batfish/snapshots/{snapshot_id}/tools/get_enriched_topology",
+    status_code=status.HTTP_200_OK,
+    summary="Fused L3 topology — protocol source, MTU, and session state per subnet (anomaly-first)",
+)
+async def get_enriched_topology(
+    snapshot_id: str,
+    user_id: Optional[str] = Query(None),
+    service: BatfishService = Depends(get_service),
+    auth_key: ApiKeyModel = Depends(get_api_key),
+):
+    try:
+        result = await service.run_tool(
+            user_id=resolve_user_id(auth_key, user_id),
+            snapshot_id=snapshot_id,
+            tool_name="get_enriched_topology",
+        )
+        return {
+            "tool": "get_enriched_topology",
+            "snapshot_id": snapshot_id,
+            "result": result,
+        }
+    except BatfishSnapshotNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except BatfishToolError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except BatfishServiceError as e:
+        logging_utility.error("get_enriched_topology failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
