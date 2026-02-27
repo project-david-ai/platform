@@ -5,9 +5,9 @@ BatfishService — Tenant-Isolated Snapshot Pipeline
 
 Isolation pattern mirrors VectorStoreDBService:
   - Every snapshot is owned by a user_id
-  - snapshot_key = f"{user_id}_{snapshot_name}" is the globally unique
+  - snapshot_key = f"{user_id}_{snapshot_id}" is the globally unique
     isolation key used for on-disk paths and Batfish network names
-  - _require_snapshot_access() enforces ownership on every operation
+  - _require_snapshot_access() enforces ownership using the opaque ID
   - No caller can touch another tenant's snapshot
 
 Pipeline:
@@ -28,6 +28,7 @@ from typing import List, Optional
 
 import pandas as pd
 from projectdavid_common.utilities.logging_service import LoggingUtility
+from projectdavid_common.utilities.utils import UtilsInterface
 from pybatfish.client.session import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession
@@ -55,7 +56,7 @@ TOOLS = [
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CUSTOM EXCEPTIONS  (mirrors VectorStoreDBError pattern)
+# CUSTOM EXCEPTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -88,14 +89,14 @@ class BatfishService:
     # ── Isolation key ─────────────────────────────────────────────────────────
 
     @staticmethod
-    def _make_key(user_id: str, snapshot_name: str) -> str:
+    def _make_key(user_id: str, snapshot_id: str) -> str:
         """Globally unique namespaced key — mirrors collection_name in VectorStore."""
-        return f"{user_id}_{snapshot_name}"
+        return f"{user_id}_{snapshot_id}"
 
     # ── Ownership enforcement ─────────────────────────────────────────────────
 
     def _require_snapshot_access(
-        self, snapshot_name: str, user_id: str
+        self, snapshot_id: str, user_id: str
     ) -> BatfishSnapshot:
         """
         Mirrors _require_store_access() in the vector store router.
@@ -104,7 +105,7 @@ class BatfishService:
         record = (
             self.db.query(BatfishSnapshot)
             .filter(
-                BatfishSnapshot.snapshot_name == snapshot_name,
+                BatfishSnapshot.id == snapshot_id,
                 BatfishSnapshot.user_id == user_id,
                 BatfishSnapshot.status != StatusEnum.deleted,
             )
@@ -112,7 +113,7 @@ class BatfishService:
         )
         if not record:
             raise BatfishSnapshotNotFoundError(
-                f"Snapshot '{snapshot_name}' not found for this user."
+                f"Snapshot ID '{snapshot_id}' not found for this user."
             )
         return record
 
@@ -121,6 +122,7 @@ class BatfishService:
     def _upsert_snapshot_record(
         self,
         user_id: str,
+        snapshot_id: str,
         snapshot_name: str,
         snapshot_key: str,
         configs_root: str,
@@ -129,18 +131,19 @@ class BatfishService:
         error_message: Optional[str] = None,
     ) -> BatfishSnapshot:
         """
-        Insert or update the BatfishSnapshot DB record.
+        Insert or update the BatfishSnapshot DB record using the opaque ID.
         Mirrors create_vector_store() / update pattern in VectorStoreDBService.
         """
         record = (
             self.db.query(BatfishSnapshot)
-            .filter(BatfishSnapshot.snapshot_key == snapshot_key)
+            .filter(BatfishSnapshot.id == snapshot_id)
             .first()
         )
 
         now = int(time.time())
 
         if record:
+            record.snapshot_name = snapshot_name
             record.configs_root = configs_root
             record.device_count = len(devices)
             record.devices = devices
@@ -151,7 +154,7 @@ class BatfishService:
                 record.last_ingested_at = now
         else:
             record = BatfishSnapshot(
-                id=uuid.uuid4().hex,
+                id=snapshot_id,
                 snapshot_name=snapshot_name,
                 snapshot_key=snapshot_key,
                 user_id=user_id,
@@ -173,14 +176,14 @@ class BatfishService:
         except IntegrityError as e:
             self.db.rollback()
             raise BatfishSnapshotConflictError(
-                f"Snapshot key conflict for '{snapshot_key}': {e}"
+                f"Conflict creating snapshot '{snapshot_name}' (ID: {snapshot_id}): {e}"
             ) from e
         except Exception as e:
             self.db.rollback()
             raise BatfishServiceError(f"DB error upserting snapshot record: {e}") from e
 
-    def get_snapshot(self, snapshot_name: str, user_id: str) -> BatfishSnapshot:
-        return self._require_snapshot_access(snapshot_name, user_id)
+    def get_snapshot(self, snapshot_id: str, user_id: str) -> BatfishSnapshot:
+        return self._require_snapshot_access(snapshot_id, user_id)
 
     def list_snapshots(self, user_id: str) -> List[BatfishSnapshot]:
         return (
@@ -193,8 +196,8 @@ class BatfishService:
             .all()
         )
 
-    def delete_snapshot(self, snapshot_name: str, user_id: str) -> bool:
-        record = self._require_snapshot_access(snapshot_name, user_id)
+    def delete_snapshot(self, snapshot_id: str, user_id: str) -> bool:
+        record = self._require_snapshot_access(snapshot_id, user_id)
         record.status = StatusEnum.deleted
         record.updated_at = int(time.time())
         try:
@@ -267,19 +270,28 @@ class BatfishService:
     ) -> BatfishSnapshot:
         """
         Full pipeline:
-          1. Derive namespaced snapshot_key from user_id + snapshot_name
-          2. Stage configs recursively
-          3. Push to Batfish
-          4. Upsert DB record with ownership + status
+          1. Generate opaque snapshot_id service-side
+          2. Derive namespaced snapshot_key from user_id + snapshot_id
+          3. Stage configs recursively
+          4. Push to Batfish
+          5. Upsert DB record with ownership + status
 
         This is the only entry point for creating or refreshing a snapshot.
+        The caller receives the generated snapshot_id on the returned record.
         """
-        snapshot_key = self._make_key(user_id, snapshot_name)
+        snapshot_id = UtilsInterface.IdentifierService.generate_snapshot_id()
+        snapshot_key = self._make_key(user_id, snapshot_id)
         root = str(configs_root or GNS3_ROOT)
 
         # Mark as loading
         self._upsert_snapshot_record(
-            user_id, snapshot_name, snapshot_key, root, [], StatusEnum.processing
+            user_id,
+            snapshot_id,
+            snapshot_name,
+            snapshot_key,
+            root,
+            [],
+            StatusEnum.processing,
         )
 
         try:
@@ -287,6 +299,7 @@ class BatfishService:
         except Exception as e:
             self._upsert_snapshot_record(
                 user_id,
+                snapshot_id,
                 snapshot_name,
                 snapshot_key,
                 root,
@@ -301,6 +314,7 @@ class BatfishService:
         except Exception as e:
             self._upsert_snapshot_record(
                 user_id,
+                snapshot_id,
                 snapshot_name,
                 snapshot_key,
                 root,
@@ -312,7 +326,13 @@ class BatfishService:
 
         # Mark ready
         return self._upsert_snapshot_record(
-            user_id, snapshot_name, snapshot_key, root, devices, StatusEnum.active
+            user_id,
+            snapshot_id,
+            snapshot_name,
+            snapshot_key,
+            root,
+            devices,
+            StatusEnum.active,
         )
 
     # ── Tool dispatch ─────────────────────────────────────────────────────────
@@ -330,24 +350,24 @@ class BatfishService:
             )
         return bf
 
-    async def run_tool(self, user_id: str, snapshot_name: str, tool_name: str) -> str:
+    async def run_tool(self, user_id: str, snapshot_id: str, tool_name: str) -> str:
         """
-        Ownership check → resolve snapshot_key → dispatch tool.
+        Ownership check by ID → resolve snapshot_key → dispatch tool.
         Called per LLM function call.
         """
         if tool_name not in TOOLS:
             raise BatfishToolError(f"Unknown tool '{tool_name}'. Available: {TOOLS}")
 
-        record = self._require_snapshot_access(snapshot_name, user_id)
+        record = self._require_snapshot_access(snapshot_id, user_id)
         snapshot_key = record.snapshot_key
         bf = self._get_bf_session(snapshot_key)
 
         method = getattr(self, f"_{tool_name}")
         return await method(bf)
 
-    async def run_all_tools(self, user_id: str, snapshot_name: str) -> dict:
-        """All tools concurrently. Ownership checked once, shared across all."""
-        record = self._require_snapshot_access(snapshot_name, user_id)
+    async def run_all_tools(self, user_id: str, snapshot_id: str) -> dict:
+        """All tools concurrently. Ownership checked once by ID, shared across all."""
+        record = self._require_snapshot_access(snapshot_id, user_id)
         snapshot_key = record.snapshot_key
         bf = self._get_bf_session(snapshot_key)
 
@@ -462,7 +482,7 @@ class BatfishService:
                 output.append(
                     f"  └─ Peer IP: {row.get('Remote_IP','?')} | "
                     f"Local AS: {row.get('Local_AS','?')} -> Remote AS: {row.get('Remote_AS','?')} | "
-                    f"Status: [⚠️ {row.get('Configured_Status','?')}]"
+                    f"Status:[⚠️ {row.get('Configured_Status','?')}]"
                 )
         return "\n".join(output)
 
@@ -495,7 +515,7 @@ class BatfishService:
             output.append(f"\nNode: {node}")
             for _, row in group.iterrows():
                 output.append(
-                    f"  └─ Unused [{row.get('Structure_Type','?')}]: '{row.get('Structure_Name','?')}'"
+                    f"  └─ Unused[{row.get('Structure_Type','?')}]: '{row.get('Structure_Name','?')}'"
                 )
         return "\n".join(output)
 

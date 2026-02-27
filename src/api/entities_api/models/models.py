@@ -592,24 +592,8 @@ class FileStorage(Base):
 
 
 class BatfishSnapshot(Base):
-    """
-    Tenant-isolated Batfish snapshot record.
-
-    Isolation pattern mirrors VectorStore exactly:
-      - id          = opaque generated ID returned to caller  e.g. "snap_abc123"
-                      used for ALL subsequent API/SDK calls
-      - snapshot_name = human label supplied by caller (per-user unique, like store 'name')
-      - snapshot_key  = f"{user_id}_{id}" — globally unique, used on-disk and in Batfish
-      - user_id       = owning user, enforced on every operation
-
-    Two users can both label their snapshot "incident_001" — no collision,
-    because externally they only ever reference their own opaque id.
-    """
-
     __tablename__ = "batfish_snapshots"
 
-    # Opaque external handle — what the caller receives and uses forever
-    # Mirrors VectorStore.id / shared_id pattern
     id = Column(
         String(64),
         primary_key=True,
@@ -617,16 +601,12 @@ class BatfishSnapshot(Base):
         comment="Opaque snapshot ID returned to caller e.g. snap_abc123",
     )
 
-    # Human-readable label supplied by caller — like VectorStore.name
-    # Per-user unique (enforced by UniqueConstraint below)
     snapshot_name = Column(
         String(128),
         nullable=False,
         comment="Caller-supplied label e.g. 'incident_001'",
     )
 
-    # Globally unique isolation key used on-disk and as Batfish snapshot name
-    # Derived as f"{user_id}_{id}" — never exposed to caller
     snapshot_key = Column(
         String(256),
         nullable=False,
@@ -635,7 +615,6 @@ class BatfishSnapshot(Base):
         comment="Namespaced isolation key: {user_id}_{id}",
     )
 
-    # Ownership — mirrors VectorStore.user_id
     user_id = Column(
         String(64),
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -643,10 +622,8 @@ class BatfishSnapshot(Base):
         index=True,
     )
 
-    # Config source path recorded at ingest time for auditability
     configs_root = Column(String(512), nullable=True)
 
-    # Device inventory captured at last ingest
     device_count = Column(Integer, default=0, nullable=False)
     devices = Column(
         JSON,
@@ -655,7 +632,6 @@ class BatfishSnapshot(Base):
         comment="List of hostnames ingested into this snapshot",
     )
 
-    # Lifecycle status
     status = Column(
         SAEnum(StatusEnum),
         nullable=False,
@@ -664,16 +640,13 @@ class BatfishSnapshot(Base):
 
     error_message = Column(Text, nullable=True)
 
-    # Timestamps
     created_at = Column(BigInteger, default=lambda: int(time.time()), nullable=False)
     updated_at = Column(BigInteger, default=lambda: int(time.time()), nullable=False)
     last_ingested_at = Column(BigInteger, nullable=True)
 
-    # Relationships
     user = relationship("User", lazy="select")
 
     __table_args__ = (
-        # Human label must be unique per user — two users CAN share the same label
         UniqueConstraint(
             "user_id", "snapshot_name", name="uq_batfish_user_snapshot_name"
         ),

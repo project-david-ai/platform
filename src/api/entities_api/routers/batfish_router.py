@@ -1,26 +1,6 @@
 # src/api/entities_api/routers/batfish_router.py
-"""
-Batfish Router — Tenant-Isolated
-=================================
-
-Every endpoint resolves the caller's user_id from their API key,
-then enforces ownership via BatfishService._require_snapshot_access().
-No caller can touch another tenant's snapshot.
-
-Endpoints:
-  POST /batfish/snapshot/refresh              → ingest + load (creates or refreshes)
-  GET  /batfish/snapshots                     → list caller's snapshots
-  GET  /batfish/snapshot/{snapshot_name}      → get single snapshot record
-  DELETE /batfish/snapshot/{snapshot_name}    → soft-delete snapshot
-  POST /batfish/tool/{tool_name}              → single RCA tool call
-  POST /batfish/tools/all                     → all tools concurrently
-  GET  /batfish/tools                         → list available tools
-  GET  /batfish/health                        → Batfish reachability
-"""
-
-from typing import List
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from projectdavid_common.schemas.batfish_schema import BatfishSnapshotRead
 from projectdavid_common.utilities.logging_service import LoggingUtility
 from sqlalchemy.orm import Session
 
@@ -35,18 +15,16 @@ router = APIRouter()
 logging_utility = LoggingUtility()
 
 
-# ── Dependency — service with DB session injected ─────────────────────────────
-
-
 def get_service(db: Session = Depends(get_db)) -> BatfishService:
     return BatfishService(db)
 
 
-# ── SNAPSHOT REFRESH ──────────────────────────────────────────────────────────
+# ── CREATE / REFRESH SNAPSHOT ─────────────────────────────────────────────────
 
 
 @router.post(
-    "/batfish/snapshot/refresh",
+    "/batfish/snapshots",
+    response_model=BatfishSnapshotRead,
     status_code=status.HTTP_200_OK,
     summary="Ingest configs and load snapshot into Batfish",
 )
@@ -61,10 +39,9 @@ async def refresh_snapshot(
     auth_key: ApiKeyModel = Depends(get_api_key),
 ):
     """
-    Recursively ingests configs from configs_root (defaults to GNS3_ROOT),
-    stages them under a namespaced snapshot_key ({user_id}_{snapshot_name}),
-    and loads the snapshot into Batfish.
-    Creates the snapshot record if new, refreshes it if it already exists.
+    Creates a new snapshot with a server-generated opaque ID, stages configs,
+    and loads into Batfish. Returns the full snapshot record — callers must
+    store the returned `id` for all subsequent calls.
     """
     try:
         record = service.refresh_snapshot(
@@ -72,13 +49,7 @@ async def refresh_snapshot(
             snapshot_name=snapshot_name,
             configs_root=configs_root,
         )
-        return {
-            "status": "ready",
-            "snapshot_name": record.snapshot_name,
-            "snapshot_key": record.snapshot_key,
-            "device_count": record.device_count,
-            "devices": record.devices,
-        }
+        return BatfishSnapshotRead.model_validate(record)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except BatfishSnapshotConflictError as e:
@@ -93,6 +64,7 @@ async def refresh_snapshot(
 
 @router.get(
     "/batfish/snapshots",
+    response_model=list[BatfishSnapshotRead],
     status_code=status.HTTP_200_OK,
     summary="List all snapshots owned by the caller",
 )
@@ -101,45 +73,27 @@ def list_snapshots(
     auth_key: ApiKeyModel = Depends(get_api_key),
 ):
     records = service.list_snapshots(user_id=auth_key.user_id)
-    return [
-        {
-            "snapshot_name": r.snapshot_name,
-            "snapshot_key": r.snapshot_key,
-            "device_count": r.device_count,
-            "status": r.status.value,
-            "last_ingested_at": r.last_ingested_at,
-            "updated_at": r.updated_at,
-        }
-        for r in records
-    ]
+    return [BatfishSnapshotRead.model_validate(r) for r in records]
 
 
 # ── GET SNAPSHOT ──────────────────────────────────────────────────────────────
 
 
 @router.get(
-    "/batfish/snapshot/{snapshot_name}",
+    "/batfish/snapshots/{snapshot_id}",
+    response_model=BatfishSnapshotRead,
     status_code=status.HTTP_200_OK,
-    summary="Get a single snapshot record",
+    summary="Get a single snapshot record by its ID",
 )
 def get_snapshot(
-    snapshot_name: str,
+    snapshot_id: str,
     service: BatfishService = Depends(get_service),
     auth_key: ApiKeyModel = Depends(get_api_key),
 ):
     try:
-        r = service.get_snapshot(snapshot_name, user_id=auth_key.user_id)
-        return {
-            "snapshot_name": r.snapshot_name,
-            "snapshot_key": r.snapshot_key,
-            "device_count": r.device_count,
-            "devices": r.devices,
-            "status": r.status.value,
-            "configs_root": r.configs_root,
-            "last_ingested_at": r.last_ingested_at,
-            "created_at": r.created_at,
-            "updated_at": r.updated_at,
-        }
+        return BatfishSnapshotRead.model_validate(
+            service.get_snapshot(snapshot_id, user_id=auth_key.user_id)
+        )
     except BatfishSnapshotNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -148,17 +102,17 @@ def get_snapshot(
 
 
 @router.delete(
-    "/batfish/snapshot/{snapshot_name}",
+    "/batfish/snapshots/{snapshot_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Soft-delete a snapshot",
+    summary="Soft-delete a snapshot by its ID",
 )
 def delete_snapshot(
-    snapshot_name: str,
+    snapshot_id: str,
     service: BatfishService = Depends(get_service),
     auth_key: ApiKeyModel = Depends(get_api_key),
 ):
     try:
-        service.delete_snapshot(snapshot_name, user_id=auth_key.user_id)
+        service.delete_snapshot(snapshot_id, user_id=auth_key.user_id)
     except BatfishSnapshotNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except BatfishServiceError as e:
@@ -169,31 +123,23 @@ def delete_snapshot(
 
 
 @router.post(
-    "/batfish/tool/{tool_name}",
+    "/batfish/snapshots/{snapshot_id}/tools/{tool_name}",
     status_code=status.HTTP_200_OK,
-    summary="Run a single RCA tool (LLM function-call endpoint)",
+    summary="Run a single RCA tool against a snapshot",
 )
 async def run_tool(
+    snapshot_id: str,
     tool_name: str,
-    snapshot_name: str = Query(..., description="Snapshot to run tool against"),
     service: BatfishService = Depends(get_service),
     auth_key: ApiKeyModel = Depends(get_api_key),
 ):
-    """
-    Ownership-enforced single tool call.
-    This is the endpoint the LLM agent hits for each function call.
-    """
     try:
         result = await service.run_tool(
             user_id=auth_key.user_id,
-            snapshot_name=snapshot_name,
+            snapshot_id=snapshot_id,
             tool_name=tool_name,
         )
-        return {
-            "tool": tool_name,
-            "snapshot_name": snapshot_name,
-            "result": result,
-        }
+        return {"tool": tool_name, "snapshot_id": snapshot_id, "result": result}
     except BatfishSnapshotNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except BatfishToolError as e:
@@ -207,21 +153,21 @@ async def run_tool(
 
 
 @router.post(
-    "/batfish/tools/all",
+    "/batfish/snapshots/{snapshot_id}/tools/all",
     status_code=status.HTTP_200_OK,
-    summary="Run all RCA tools concurrently",
+    summary="Run all RCA tools concurrently against a snapshot",
 )
 async def run_all_tools(
-    snapshot_name: str = Query(..., description="Snapshot to run all tools against"),
+    snapshot_id: str,
     service: BatfishService = Depends(get_service),
     auth_key: ApiKeyModel = Depends(get_api_key),
 ):
     try:
         results = await service.run_all_tools(
             user_id=auth_key.user_id,
-            snapshot_name=snapshot_name,
+            snapshot_id=snapshot_id,
         )
-        return {"snapshot_name": snapshot_name, "results": results}
+        return {"snapshot_id": snapshot_id, "results": results}
     except BatfishSnapshotNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except BatfishServiceError as e:
@@ -249,9 +195,7 @@ def list_tools():
     status_code=status.HTTP_200_OK,
     summary="Check Batfish backend reachability",
 )
-def batfish_health(
-    service: BatfishService = Depends(get_service),
-):
+def batfish_health(service: BatfishService = Depends(get_service)):
     try:
         return service.check_health()
     except ConnectionError as e:
