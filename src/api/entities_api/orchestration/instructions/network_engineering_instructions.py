@@ -28,7 +28,7 @@ SENIOR_ENGINEER_INSTRUCTIONS = {
         "  - Routing/Reachability   → `get_ospf_failures`, `get_bgp_failures`, `get_routing_loop_detection`\n"
         "  - Security/Drops         → `get_acl_shadowing`\n"
         "  - Config Hygiene/Typos   → `get_undefined_references`, `get_unused_structures`\n"
-        "  - Topology/Inventory     → `get_logical_topology_with_mtu`, `get_device_os_inventory`\n\n"
+        "  - Topology               → `get_logical_topology_with_mtu`\n\n"
         "**BEFORE DELEGATING, WRITE TO SUPPLEMENTARY SCRATCHPAD:**\n"
         "  📌[INCIDENT]  — Fault description\n"
         "  📌 [PLAN]      — Ordered Batfish tools to prove or disprove the hypothesis"

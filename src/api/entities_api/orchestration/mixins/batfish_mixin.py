@@ -11,6 +11,14 @@ from projectdavid_common.validation import StatusEnum
 
 LOG = LoggingUtility()
 
+# ---------------------------------------------------------------------------
+# TODO: Replace with programmatic injection via assistant/user settings.
+# This will be resolved from the user's active incident context — likely
+# stored in assistant metadata or a dedicated snapshot_id field — once the
+# end-to-end agent flow has been validated.
+# ---------------------------------------------------------------------------
+_DEFAULT_SNAPSHOT_ID = "incident_001"
+
 
 def _status(run_id: str, tool: str, message: str, status: str = "running") -> str:
     return json.dumps(
@@ -148,7 +156,17 @@ class BatfishMixin:
         # --- [3] DISPATCH ---
         try:
             res = None
-            snapshot_id = arguments_dict.get("snapshot_id")
+
+            # Resolve snapshot_id — LLM may omit it during preliminary testing.
+            # Falls back to _DEFAULT_SNAPSHOT_ID until programmatic injection
+            # via assistant settings is implemented.
+            snapshot_id = arguments_dict.get("snapshot_id") or _DEFAULT_SNAPSHOT_ID
+            if not arguments_dict.get("snapshot_id"):
+                LOG.info(
+                    "BATFISH ▸ snapshot_id not provided by LLM — "
+                    "using hardcoded fallback: %s",
+                    snapshot_id,
+                )
 
             if tool_name == "refresh_snapshot":
                 yield _status(
@@ -392,10 +410,14 @@ class BatfishMixin:
         decision: Optional[Dict] = None,
         user_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
-        """Run a single named RCA tool against a loaded snapshot."""
+        """
+        Run a single named RCA tool against the active snapshot.
+        snapshot_id is optional — falls back to _DEFAULT_SNAPSHOT_ID
+        until programmatic injection via assistant settings is implemented.
+        """
         async for event in self._execute_batfish_tool_logic(
             tool_name="run_batfish_tool",
-            required_schema={"snapshot_id": str, "batfish_tool_name": str},
+            required_schema={"batfish_tool_name": str},  # snapshot_id optional for now
             thread_id=thread_id,
             run_id=run_id,
             assistant_id=assistant_id,
@@ -416,10 +438,14 @@ class BatfishMixin:
         decision: Optional[Dict] = None,
         user_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
-        """Run all RCA tools concurrently against a loaded snapshot."""
+        """
+        Run all RCA tools concurrently against the active snapshot.
+        snapshot_id is optional — falls back to _DEFAULT_SNAPSHOT_ID
+        until programmatic injection via assistant settings is implemented.
+        """
         async for event in self._execute_batfish_tool_logic(
             tool_name="run_all_batfish_tools",
-            required_schema={"snapshot_id": str},
+            required_schema={},  # snapshot_id optional for now
             thread_id=thread_id,
             run_id=run_id,
             assistant_id=assistant_id,
