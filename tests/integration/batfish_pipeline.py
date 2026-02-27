@@ -19,7 +19,7 @@ client = Entity(
 # ------------------------------------------------------------------
 # Option B — pass the container-side path explicitly
 snapshot = client.batfish.refresh_snapshot(
-    snapshot_name="incident_009",
+    snapshot_name="incident_0013",
     configs_root="/data/gns3/configs_for_batfish",
 )
 # time.sleep(1000)
@@ -43,11 +43,12 @@ print(result["result"])
 # ------------------------------------------------------------------
 # 4.  Run all tools in one shot (broader RCA sweep)
 # ------------------------------------------------------------------
-# all_results = client.batfish.run_all_tools(snapshot_id)
-# for tool_name, output in all_results["results"].items():
-#    print(f"\n{'='*60}")
-#    print(f"TOOL: {tool_name}")
-#    print(output)
+all_results = client.batfish.run_all_tools(snapshot_id)
+for tool_name, output in all_results["results"].items():
+    print(f"\n{'='*60}")
+    print(f"TOOL: {tool_name}")
+    print(output)
+
 
 # ------------------------------------------------------------------
 # 5.  Look up the snapshot later by ID

@@ -162,6 +162,34 @@ def delete_snapshot(
 # ── SINGLE TOOL ───────────────────────────────────────────────────────────────
 
 
+# ----------------------------------------------------------------------
+# Must remain before /batfish/snapshots/{snapshot_id}/tools/{tool_name}
+# For order resolution reasons.
+# ----------------------------------------------------------------------
+@router.post(
+    "/batfish/snapshots/{snapshot_id}/tools/all",
+    status_code=status.HTTP_200_OK,
+    summary="Run all RCA tools concurrently",
+)
+async def run_all_tools(
+    snapshot_id: str,
+    user_id: Optional[str] = Query(None, description="Admin override"),
+    service: BatfishService = Depends(get_service),
+    auth_key: ApiKeyModel = Depends(get_api_key),
+):
+    try:
+        results = await service.run_all_tools(
+            user_id=resolve_user_id(auth_key, user_id),
+            snapshot_id=snapshot_id,
+        )
+        return {"snapshot_id": snapshot_id, "results": results}
+    except BatfishSnapshotNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except BatfishServiceError as e:
+        logging_utility.error(f"run_all_tools failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post(
     "/batfish/snapshots/{snapshot_id}/tools/{tool_name}",
     status_code=status.HTTP_200_OK,
@@ -191,30 +219,6 @@ async def run_tool(
 
 
 # ── ALL TOOLS ─────────────────────────────────────────────────────────────────
-
-
-@router.post(
-    "/batfish/snapshots/{snapshot_id}/tools/all",
-    status_code=status.HTTP_200_OK,
-    summary="Run all RCA tools concurrently",
-)
-async def run_all_tools(
-    snapshot_id: str,
-    user_id: Optional[str] = Query(None, description="Admin override"),
-    service: BatfishService = Depends(get_service),
-    auth_key: ApiKeyModel = Depends(get_api_key),
-):
-    try:
-        results = await service.run_all_tools(
-            user_id=resolve_user_id(auth_key, user_id),
-            snapshot_id=snapshot_id,
-        )
-        return {"snapshot_id": snapshot_id, "results": results}
-    except BatfishSnapshotNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except BatfishServiceError as e:
-        logging_utility.error(f"run_all_tools failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── TOOL MANIFEST ─────────────────────────────────────────────────────────────

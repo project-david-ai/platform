@@ -78,11 +78,42 @@ class BatfishToolError(BatfishServiceError):
     pass
 
 
+# ---------------------------------------
+# Helpers
+# -----------------------------------------
+
+
+def _session_hint(status: str, mtu_mismatch: bool) -> str:
+    """Return a terse diagnosis hint based on session status and known subnet flags."""
+    hints = {
+        "INIT": (
+            "dead/hello timer or MTU mismatch likely"
+            if mtu_mismatch
+            else "dead/hello timer mismatch or auth failure"
+        ),
+        "ATTEMPT": "neighbour unreachable or auth failure",
+        "EXSTART": (
+            "MTU mismatch preventing DBD exchange"
+            if mtu_mismatch
+            else "DBD exchange failure — check MTU and duplex"
+        ),
+        "EXCHANGE": (
+            "MTU mismatch during LSA flood" if mtu_mismatch else "LSA exchange stalled"
+        ),
+        "LOADING": "LSA retransmit loop — check for corrupt LSA",
+        "NO_SESSION": "OSPF not configured on one or both interfaces",
+        "HALF_OPEN": "one side configured, other side missing peer definition",
+        "UNIQUE_MATCH": "",
+        "LOCAL_IP_UNKNOWN": "local interface IP missing or misconfigured",
+        "INVALID_LOCAL_IP": "local IP not matching any interface subnet",
+    }
+    hint = hints.get(status, "unknown failure — manual inspection required")
+    return f" ← {hint}" if hint else ""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SERVICE
 # ─────────────────────────────────────────────────────────────────────────────
-
-
 class BatfishService:
 
     def __init__(self, db: DBSession):
@@ -500,7 +531,195 @@ class BatfishService:
                 )
         return "\n".join(output)
 
-    # ── HEALTH ────────────────────────────────────────────────────────────────
+        # ── TOOL 9: get_enriched_topology ────────────────────────────────────────
+        #
+        # Add this method to BatfishService alongside the other RCA tools,
+        # and add "get_enriched_topology" to the TOOLS list.
+        #
+        # ─────────────────────────────────────────────────────────────────────────
+
+    async def _get_enriched_topology(self, bf: Session) -> str:
+        """
+        TOOL — Enriched L3 Topology with Protocol Source and Session State
+        ====================================================================
+        Fuses interface properties, routing protocol membership, and live
+        session compatibility into a single per-subnet view.
+
+        Scale strategy — safe at thousands of devices:
+          - Healthy subnets (no MTU mismatch, all sessions ESTABLISHED,
+            all interfaces active) are suppressed to a one-line summary.
+          - Only problem subnets are expanded with full detail.
+          - Final line reports total suppressed count so the LLM knows
+            what it is NOT seeing.
+
+        Output per problem subnet:
+          Network: <prefix>  [flags]
+            └─ <node>:<iface>  IP:<addr>  Proto:<OSPF|BGP|STATIC|CONNECTED>
+                               Area:<x>  MTU:<n>  Active:<bool>
+            └─ Session: <status> [⚠️ diagnosis hint if failed]
+
+        Best for: Single-pass RCA — the LLM sees topology source, MTU,
+        and session state together without needing to cross-reference
+        multiple tool outputs.
+        """
+
+        def _fetch():
+            iface_df = (
+                bf.q.interfaceProperties(
+                    properties="Primary_Address,Active,MTU,Interface_Type"
+                )
+                .answer()
+                .frame()
+            )
+            ospf_iface_df = bf.q.ospfInterfaceConfiguration().answer().frame()
+            ospf_session_df = bf.q.ospfSessionCompatibility().answer().frame()
+            bgp_session_df = bf.q.bgpSessionCompatibility().answer().frame()
+            return iface_df, ospf_iface_df, ospf_session_df, bgp_session_df
+
+        iface_df, ospf_iface_df, ospf_session_df, bgp_session_df = (
+            await asyncio.to_thread(_fetch)
+        )
+
+        # ── Normalise interface frame ─────────────────────────────────────────
+        iface_df["Node"] = iface_df["Interface"].apply(lambda x: x.hostname)
+        iface_df["Int"] = iface_df["Interface"].apply(lambda x: x.interface)
+
+        # ── Attach OSPF area and enabled flag ─────────────────────────────────
+        if not ospf_iface_df.empty:
+            ospf_iface_df["Node"] = ospf_iface_df["Interface"].apply(
+                lambda x: x.hostname
+            )
+            ospf_iface_df["Int"] = ospf_iface_df["Interface"].apply(
+                lambda x: x.interface
+            )
+            ospf_meta = ospf_iface_df[
+                ["Node", "Int", "OSPF_Area_Name", "OSPF_Enabled", "OSPF_Passive"]
+            ].copy()
+            merged = pd.merge(iface_df, ospf_meta, on=["Node", "Int"], how="left")
+        else:
+            merged = iface_df.copy()
+            merged["OSPF_Area_Name"] = None
+            merged["OSPF_Enabled"] = False
+            merged["OSPF_Passive"] = False
+
+        # ── Derive protocol label per interface ───────────────────────────────
+        def _proto_label(row) -> str:
+            if row.get("OSPF_Enabled") is True:
+                area = row.get("OSPF_Area_Name", "?")
+                passive = " PASSIVE" if row.get("OSPF_Passive") is True else ""
+                return f"OSPF Area {area}{passive}"
+            itype = str(row.get("Interface_Type", "")).upper()
+            if "LOOPBACK" in itype:
+                return "CONNECTED (loopback)"
+            return "CONNECTED"
+
+        merged["Proto"] = merged.apply(_proto_label, axis=1)
+
+        # ── Build OSPF session lookup: (node, peer_node) → status ─────────────
+        ospf_sessions: dict = {}
+        if not ospf_session_df.empty and "Session_Status" in ospf_session_df.columns:
+            ospf_session_df["Node"] = ospf_session_df["Interface"].apply(
+                lambda x: x.hostname if hasattr(x, "hostname") else str(x)
+            )
+            for _, row in ospf_session_df.iterrows():
+                key = (str(row["Node"]), str(row.get("Remote_Node", "?")))
+                ospf_sessions[key] = str(row.get("Session_Status", "UNKNOWN"))
+
+        # ── Build BGP session lookup: (node, peer_ip) → status ───────────────
+        bgp_sessions: dict = {}
+        if not bgp_session_df.empty and "Configured_Status" in bgp_session_df.columns:
+            bgp_session_df["Node"] = bgp_session_df.get(
+                "Node",
+                bgp_session_df["Interface"].apply(
+                    lambda x: x.hostname if hasattr(x, "hostname") else str(x)
+                ),
+            )
+            for _, row in bgp_session_df.iterrows():
+                key = (str(row["Node"]), str(row.get("Remote_IP", "?")))
+                bgp_sessions[key] = str(row.get("Configured_Status", "UNKNOWN"))
+
+        # ── Group by subnet ───────────────────────────────────────────────────
+        def _subnet(ip_val) -> str:
+            try:
+                return str(ipaddress.IPv4Interface(str(ip_val)).network)
+            except Exception:
+                return "Unknown"
+
+        l3 = merged.dropna(subset=["Primary_Address"]).copy()
+        l3["Subnet"] = l3["Primary_Address"].apply(_subnet)
+
+        healthy_count = 0
+        problem_blocks = []
+
+        for subnet, group in l3.groupby("Subnet"):
+            group = group.copy()
+
+            # ── Subnet-level flags ────────────────────────────────────────────
+            mtus = group["MTU"].dropna().unique()
+            mtu_mismatch = len(mtus) > 1
+            inactive = group[group["Active"] == False]  # noqa: E712
+
+            # ── Session state for this subnet's node pairs ────────────────────
+            nodes_in_subnet = group["Node"].tolist()
+            subnet_session_problems = []
+
+            # Check OSPF sessions between all node pairs on this subnet
+            for i, n1 in enumerate(nodes_in_subnet):
+                for n2 in nodes_in_subnet[i + 1 :]:
+                    fwd = ospf_sessions.get((n1, n2))
+                    rev = ospf_sessions.get((n2, n1))
+                    status = fwd or rev
+                    if status and status != "ESTABLISHED":
+                        hint = _session_hint(status, mtu_mismatch)
+                        subnet_session_problems.append(
+                            f"    └─ OSPF Session {n1}↔{n2}: " f"[⚠️ {status}]{hint}"
+                        )
+
+            is_healthy = (
+                not mtu_mismatch and inactive.empty and not subnet_session_problems
+            )
+
+            if is_healthy:
+                healthy_count += 1
+                continue
+
+            # ── Build problem block ───────────────────────────────────────────
+            flags = []
+            if mtu_mismatch:
+                flags.append("⚠️ MTU MISMATCH")
+            if not inactive.empty:
+                flags.append(f"⚠️ {len(inactive)} INACTIVE INTERFACE(S)")
+            flag_str = "  [" + " | ".join(flags) + "]" if flags else ""
+
+            lines = [f"\nNetwork: {subnet}{flag_str}"]
+            for _, row in group.iterrows():
+                active_str = "✓" if row["Active"] else "✗ INACTIVE"
+                lines.append(
+                    f"  └─ {row['Node']}:{row['Int']}"
+                    f"  IP: {row['Primary_Address']}"
+                    f"  Proto: {row['Proto']}"
+                    f"  MTU: {row['MTU']}"
+                    f"  Active: {active_str}"
+                )
+            lines.extend(subnet_session_problems)
+            problem_blocks.append("\n".join(lines))
+
+        # ── Assemble output ───────────────────────────────────────────────────
+        output = ["=== ENRICHED L3 TOPOLOGY (PROBLEMS ONLY) ==="]
+
+        if not problem_blocks:
+            output.append(
+                f"\nAll {healthy_count} subnet(s) are healthy — "
+                "no MTU mismatches, inactive interfaces, or session failures detected."
+            )
+        else:
+            output.extend(problem_blocks)
+            output.append(
+                f"\n── {healthy_count} healthy subnet(s) suppressed "
+                f"({len(problem_blocks)} problem subnet(s) shown above) ──"
+            )
+
+        return "\n".join(output)
 
     def check_health(self) -> dict:
         import urllib.request
