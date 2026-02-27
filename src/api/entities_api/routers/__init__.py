@@ -1,6 +1,5 @@
 from fastapi import APIRouter
 
-# ... imports of other routers ...
 from src.api.entities_api.routers.actions_router import \
     router as actions_router
 from src.api.entities_api.routers.admin_router import \
