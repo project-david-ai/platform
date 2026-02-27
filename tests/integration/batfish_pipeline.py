@@ -18,8 +18,8 @@ client = Entity(
 # 1.  Create a snapshot — server generates and returns the opaque ID
 # ------------------------------------------------------------------
 # Option B — pass the container-side path explicitly
-snapshot = client.batfish.refresh_snapshot(
-    snapshot_name="incident_0013",
+snapshot = client.batfish.create_snapshot(
+    snapshot_name="incident_00132",
     configs_root="/data/gns3/configs_for_batfish",
 )
 # time.sleep(1000)
@@ -75,3 +75,8 @@ client.batfish.delete_snapshot(snapshot_id)
 # ------------------------------------------------------------------
 health = client.batfish.check_health()
 print(health)  # {"status": "reachable", "host": "batfish", "port": 9996}
+
+# -------------------------------
+# Delete
+# --------------------------------
+client.batfish.list_snapshots()

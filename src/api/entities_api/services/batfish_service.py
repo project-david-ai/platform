@@ -160,21 +160,46 @@ class BatfishService:
         snapshot_name: str,
         configs_root: Optional[str] = None,
     ) -> BatfishSnapshot:
+        """
+        Create a new snapshot (or resurrect a previously deleted one with
+        the same name). Raises 409 only if an active/non-deleted snapshot
+        with this name already exists for this user.
+        """
+        # Check for any existing record with this name — including deleted ones
         existing = (
             self.db.query(BatfishSnapshot)
             .filter(
                 BatfishSnapshot.snapshot_name == snapshot_name,
                 BatfishSnapshot.user_id == user_id,
-                BatfishSnapshot.status != StatusEnum.deleted,
             )
             .first()
         )
-        if existing:
-            raise BatfishSnapshotConflictError(
-                f"Snapshot name '{snapshot_name}' already exists (id={existing.id}). "
-                f"Use refresh_snapshot('{existing.id}') to re-ingest it."
-            )
 
+        if existing:
+            if existing.status != StatusEnum.deleted:
+                # Active record — caller should use refresh_snapshot instead
+                raise BatfishSnapshotConflictError(
+                    f"Snapshot name '{snapshot_name}' already exists (id={existing.id}). "
+                    f"Use refresh_snapshot('{existing.id}') to re-ingest it."
+                )
+            # Soft-deleted record — resurrect it in place rather than inserting
+            # a new row (which would violate the unique constraint)
+            root = str(configs_root or GNS3_ROOT)
+            existing.status = StatusEnum.processing
+            existing.configs_root = root
+            existing.device_count = 0
+            existing.devices = []
+            existing.error_message = None
+            existing.updated_at = int(time.time())
+            try:
+                self.db.commit()
+                self.db.refresh(existing)
+            except Exception as e:
+                self.db.rollback()
+                raise BatfishServiceError(f"DB error resurrecting snapshot: {e}") from e
+            return self._run_ingest(existing, root)
+
+        # Brand new name — insert fresh record
         snapshot_id = self._generate_snapshot_id()
         snapshot_key = self._make_key(user_id, snapshot_id)
         root = str(configs_root or GNS3_ROOT)
