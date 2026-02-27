@@ -169,12 +169,3 @@ async def get_inventory_service(
     Automatically handles the Redis connection via InventoryCache.
     """
     return InventoryService(inventory_cache=cache)
-
-
-# 2. Add this function at the bottom of the file:
-async def get_batfish_service() -> BatfishService:
-    """
-    Injects the BatfishService for snapshot ingestion and RCA query execution.
-    No external dependencies required — reads from env vars for host/port.
-    """
-    return BatfishService()

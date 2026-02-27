@@ -14,7 +14,7 @@ websockets==15.0.1
 transformers>=4.33.0,<5.0.0
 # ------------------------------------------------------------------ #
 # Internal packages
-projectdavid==1.67.1
+projectdavid==1.69.1
 
 # web search tools
 
@@ -24,7 +24,6 @@ requests>=2.31.0
 
 #sandbox sec
 jwt
-
 # -----------------------
 # Telemetry packages
 #------------------------
@@ -34,3 +33,8 @@ opentelemetry-exporter-otlp
 opentelemetry-instrumentation-fastapi
 opentelemetry-instrumentation-asgi
 opentelemetry-instrumentation-requests
+#--------------------
+# Bat Fish
+#--------------------
+pybatfish
+pandas

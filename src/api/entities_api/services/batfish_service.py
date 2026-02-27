@@ -11,7 +11,10 @@ Isolation pattern mirrors VectorStoreDBService:
   - No caller can touch another tenant's snapshot
 
 Pipeline:
-  refresh_snapshot()  → ingest configs + push to Batfish + upsert DB record
+  create_snapshot()   → generate id, ingest configs, push to Batfish, insert DB record
+                        fails 409 if snapshot_name already exists for this user
+  refresh_snapshot()  → re-ingest configs + push to Batfish on existing id
+                        fails 404 if snapshot_id not found for this user
   run_tool()          → ownership check → dispatch single RCA tool
   run_all_tools()     → ownership check → all tools concurrently
 """
@@ -28,7 +31,6 @@ from typing import List, Optional
 
 import pandas as pd
 from projectdavid_common.utilities.logging_service import LoggingUtility
-from projectdavid_common.utilities.utils import UtilsInterface
 from pybatfish.client.session import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession
@@ -89,8 +91,11 @@ class BatfishService:
     # ── Isolation key ─────────────────────────────────────────────────────────
 
     @staticmethod
+    def _generate_snapshot_id() -> str:
+        return f"snap_{uuid.uuid4().hex[:20]}"
+
+    @staticmethod
     def _make_key(user_id: str, snapshot_id: str) -> str:
-        """Globally unique namespaced key — mirrors collection_name in VectorStore."""
         return f"{user_id}_{snapshot_id}"
 
     # ── Ownership enforcement ─────────────────────────────────────────────────
@@ -98,10 +103,6 @@ class BatfishService:
     def _require_snapshot_access(
         self, snapshot_id: str, user_id: str
     ) -> BatfishSnapshot:
-        """
-        Mirrors _require_store_access() in the vector store router.
-        Raises BatfishSnapshotNotFoundError if not found or not owned by user_id.
-        """
         record = (
             self.db.query(BatfishSnapshot)
             .filter(
@@ -113,77 +114,151 @@ class BatfishService:
         )
         if not record:
             raise BatfishSnapshotNotFoundError(
-                f"Snapshot ID '{snapshot_id}' not found for this user."
+                f"Snapshot '{snapshot_id}' not found for this user."
             )
         return record
 
-    # ── DB helpers ────────────────────────────────────────────────────────────
+    # ── CREATE — new snapshot, fails if name already exists ──────────────────
 
-    def _upsert_snapshot_record(
+    def create_snapshot(
         self,
         user_id: str,
-        snapshot_id: str,
         snapshot_name: str,
-        snapshot_key: str,
-        configs_root: str,
-        devices: List[str],
-        status: StatusEnum,
-        error_message: Optional[str] = None,
+        configs_root: Optional[str] = None,
     ) -> BatfishSnapshot:
         """
-        Insert or update the BatfishSnapshot DB record using the opaque ID.
-        Mirrors create_vector_store() / update pattern in VectorStoreDBService.
+        Generate a new opaque snapshot_id, insert DB record, ingest configs,
+        push to Batfish. Returns the record with the generated id.
+
+        Raises BatfishSnapshotConflictError (409) if snapshot_name already
+        exists for this user — use refresh_snapshot(id) to update it.
         """
-        record = (
+        # Check for existing name before doing any work
+        existing = (
             self.db.query(BatfishSnapshot)
-            .filter(BatfishSnapshot.id == snapshot_id)
+            .filter(
+                BatfishSnapshot.snapshot_name == snapshot_name,
+                BatfishSnapshot.user_id == user_id,
+                BatfishSnapshot.status != StatusEnum.deleted,
+            )
             .first()
         )
+        if existing:
+            raise BatfishSnapshotConflictError(
+                f"Snapshot name '{snapshot_name}' already exists (id={existing.id}). "
+                f"Use refresh_snapshot('{existing.id}') to re-ingest it."
+            )
 
+        snapshot_id = self._generate_snapshot_id()
+        snapshot_key = self._make_key(user_id, snapshot_id)
+        root = str(configs_root or GNS3_ROOT)
         now = int(time.time())
 
-        if record:
-            record.snapshot_name = snapshot_name
-            record.configs_root = configs_root
-            record.device_count = len(devices)
-            record.devices = devices
-            record.status = status
-            record.error_message = error_message
-            record.updated_at = now
-            if status == StatusEnum.active:
-                record.last_ingested_at = now
-        else:
-            record = BatfishSnapshot(
-                id=snapshot_id,
-                snapshot_name=snapshot_name,
-                snapshot_key=snapshot_key,
-                user_id=user_id,
-                configs_root=configs_root,
-                device_count=len(devices),
-                devices=devices,
-                status=status,
-                error_message=error_message,
-                created_at=now,
-                updated_at=now,
-                last_ingested_at=now if status == StatusEnum.active else None,
-            )
-            self.db.add(record)
+        record = BatfishSnapshot(
+            id=snapshot_id,
+            snapshot_name=snapshot_name,
+            snapshot_key=snapshot_key,
+            user_id=user_id,
+            configs_root=root,
+            device_count=0,
+            devices=[],
+            status=StatusEnum.processing,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(record)
+        try:
+            self.db.commit()
+            self.db.refresh(record)
+        except IntegrityError as e:
+            self.db.rollback()
+            raise BatfishSnapshotConflictError(
+                f"Snapshot name '{snapshot_name}' already exists: {e}"
+            ) from e
+
+        return self._run_ingest(record, root)
+
+    # ── REFRESH — re-ingest existing snapshot by id ───────────────────────────
+
+    def refresh_snapshot(
+        self,
+        snapshot_id: str,
+        user_id: str,
+        configs_root: Optional[str] = None,
+    ) -> BatfishSnapshot:
+        """
+        Re-ingest configs and reload Batfish for an existing snapshot.
+        Caller identifies snapshot by opaque id returned from create_snapshot().
+
+        Raises BatfishSnapshotNotFoundError (404) if id not found for this user.
+        """
+        record = self._require_snapshot_access(snapshot_id, user_id)
+        root = str(configs_root or record.configs_root or GNS3_ROOT)
+        return self._run_ingest(record, root)
+
+    # ── SHARED INGEST PIPELINE ────────────────────────────────────────────────
+
+    def _run_ingest(self, record: BatfishSnapshot, root: str) -> BatfishSnapshot:
+        """Stage configs + push to Batfish. Updates record status throughout."""
+        record.status = StatusEnum.processing
+        record.updated_at = int(time.time())
+        self.db.commit()
+
+        try:
+            devices = self._stage_configs(record.snapshot_key, root)
+        except Exception as e:
+            self._mark_failed(record, str(e))
+            raise BatfishServiceError(f"Config staging failed: {e}") from e
+
+        try:
+            self._push_to_batfish(record.snapshot_key)
+        except Exception as e:
+            self._mark_failed(record, str(e))
+            raise BatfishServiceError(f"Batfish load failed: {e}") from e
+
+        now = int(time.time())
+        record.devices = devices
+        record.device_count = len(devices)
+        record.configs_root = root
+        record.status = StatusEnum.active
+        record.error_message = None
+        record.updated_at = now
+        record.last_ingested_at = now
 
         try:
             self.db.commit()
             self.db.refresh(record)
             return record
-        except IntegrityError as e:
-            self.db.rollback()
-            raise BatfishSnapshotConflictError(
-                f"Conflict creating snapshot '{snapshot_name}' (ID: {snapshot_id}): {e}"
-            ) from e
         except Exception as e:
             self.db.rollback()
-            raise BatfishServiceError(f"DB error upserting snapshot record: {e}") from e
+            raise BatfishServiceError(f"DB error finalising snapshot: {e}") from e
+
+    def _mark_failed(self, record: BatfishSnapshot, error: str):
+        record.status = StatusEnum.failed
+        record.error_message = error
+        record.updated_at = int(time.time())
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+
+    # ── READ / LIST / DELETE ──────────────────────────────────────────────────
 
     def get_snapshot(self, snapshot_id: str, user_id: str) -> BatfishSnapshot:
         return self._require_snapshot_access(snapshot_id, user_id)
+
+    def get_snapshot_by_name(
+        self, snapshot_name: str, user_id: str
+    ) -> Optional[BatfishSnapshot]:
+        return (
+            self.db.query(BatfishSnapshot)
+            .filter(
+                BatfishSnapshot.snapshot_name == snapshot_name,
+                BatfishSnapshot.user_id == user_id,
+                BatfishSnapshot.status != StatusEnum.deleted,
+            )
+            .first()
+        )
 
     def list_snapshots(self, user_id: str) -> List[BatfishSnapshot]:
         return (
@@ -205,172 +280,31 @@ class BatfishService:
             return True
         except Exception as e:
             self.db.rollback()
-            raise BatfishServiceError(f"DB error soft-deleting snapshot: {e}") from e
+            raise BatfishServiceError(f"DB error deleting snapshot: {e}") from e
 
-    # ── Pipeline — ingest ─────────────────────────────────────────────────────
-
-    def _stage_configs(self, snapshot_key: str, configs_root: str) -> List[str]:
-        """
-        Recursively collect configs from configs_root, extract hostnames,
-        and stage into /data/snapshots/{snapshot_key}/configs/.
-        Cleans stale configs on each refresh.
-        """
-        root = Path(configs_root)
-        if not root.exists():
-            raise FileNotFoundError(f"configs_root not found: {root}")
-
-        candidates = list(root.rglob("*startup-config.cfg"))
-        if not candidates:
-            candidates = list(root.rglob("*.cfg"))
-        if not candidates:
-            raise FileNotFoundError(f"No config files found under {root}")
-
-        dest = SNAPSHOT_ROOT / snapshot_key / "configs"
-        dest.mkdir(parents=True, exist_ok=True)
-
-        for old in dest.glob("*.cfg"):
-            old.unlink()
-
-        staged = []
-        for cfg_path in candidates:
-            text = cfg_path.read_text(errors="ignore")
-            hostname = self._extract_hostname(text) or f"device_{uuid.uuid4().hex[:6]}"
-            dest_file = dest / f"{hostname}.cfg"
-            if dest_file.exists():
-                dest_file = dest / f"{hostname}_{uuid.uuid4().hex[:4]}.cfg"
-            shutil.copy(cfg_path, dest_file)
-            staged.append(hostname)
-
-        logging_utility.info(
-            f"Staged {len(staged)} configs → {dest} (snapshot_key={snapshot_key})"
-        )
-        return staged
-
-    # ── Pipeline — load snapshot ──────────────────────────────────────────────
-
-    def _push_to_batfish(self, snapshot_key: str):
-        """Push staged snapshot directory into Batfish."""
-        snapshot_path = SNAPSHOT_ROOT / snapshot_key
-        if not snapshot_path.exists():
-            raise FileNotFoundError(
-                f"Snapshot path not found: {snapshot_path}. Run ingest first."
-            )
-        bf = Session(host=BATFISH_HOST, port=BATFISH_PORT)
-        bf.set_network(BATFISH_NETWORK)
-        bf.init_snapshot(str(snapshot_path), name=snapshot_key, overwrite=True)
-        logging_utility.info(f"Snapshot '{snapshot_key}' loaded into Batfish")
-
-    # ── Pipeline — full refresh ───────────────────────────────────────────────
-
-    def refresh_snapshot(
-        self,
-        user_id: str,
-        snapshot_name: str,
-        configs_root: Optional[str] = None,
-    ) -> BatfishSnapshot:
-        """
-        Full pipeline:
-          1. Generate opaque snapshot_id service-side
-          2. Derive namespaced snapshot_key from user_id + snapshot_id
-          3. Stage configs recursively
-          4. Push to Batfish
-          5. Upsert DB record with ownership + status
-
-        This is the only entry point for creating or refreshing a snapshot.
-        The caller receives the generated snapshot_id on the returned record.
-        """
-        snapshot_id = UtilsInterface.IdentifierService.generate_snapshot_id()
-        snapshot_key = self._make_key(user_id, snapshot_id)
-        root = str(configs_root or GNS3_ROOT)
-
-        # Mark as loading
-        self._upsert_snapshot_record(
-            user_id,
-            snapshot_id,
-            snapshot_name,
-            snapshot_key,
-            root,
-            [],
-            StatusEnum.processing,
-        )
-
-        try:
-            devices = self._stage_configs(snapshot_key, root)
-        except Exception as e:
-            self._upsert_snapshot_record(
-                user_id,
-                snapshot_id,
-                snapshot_name,
-                snapshot_key,
-                root,
-                [],
-                StatusEnum.failed,
-                error_message=str(e),
-            )
-            raise BatfishServiceError(f"Config staging failed: {e}") from e
-
-        try:
-            self._push_to_batfish(snapshot_key)
-        except Exception as e:
-            self._upsert_snapshot_record(
-                user_id,
-                snapshot_id,
-                snapshot_name,
-                snapshot_key,
-                root,
-                devices,
-                StatusEnum.failed,
-                error_message=str(e),
-            )
-            raise BatfishServiceError(f"Batfish load failed: {e}") from e
-
-        # Mark ready
-        return self._upsert_snapshot_record(
-            user_id,
-            snapshot_id,
-            snapshot_name,
-            snapshot_key,
-            root,
-            devices,
-            StatusEnum.active,
-        )
-
-    # ── Tool dispatch ─────────────────────────────────────────────────────────
+    # ── TOOL DISPATCH ─────────────────────────────────────────────────────────
 
     def _get_bf_session(self, snapshot_key: str) -> Session:
-        """Get a Batfish session attached to the tenant's snapshot."""
         bf = Session(host=BATFISH_HOST, port=BATFISH_PORT)
         bf.set_network(BATFISH_NETWORK)
         try:
             bf.set_snapshot(snapshot_key)
         except Exception:
             raise BatfishSnapshotNotFoundError(
-                f"Snapshot '{snapshot_key}' not loaded in Batfish. "
-                "Call refresh_snapshot first."
+                "Snapshot not loaded in Batfish. Call refresh_snapshot first."
             )
         return bf
 
     async def run_tool(self, user_id: str, snapshot_id: str, tool_name: str) -> str:
-        """
-        Ownership check by ID → resolve snapshot_key → dispatch tool.
-        Called per LLM function call.
-        """
         if tool_name not in TOOLS:
             raise BatfishToolError(f"Unknown tool '{tool_name}'. Available: {TOOLS}")
-
         record = self._require_snapshot_access(snapshot_id, user_id)
-        snapshot_key = record.snapshot_key
-        bf = self._get_bf_session(snapshot_key)
-
-        method = getattr(self, f"_{tool_name}")
-        return await method(bf)
+        bf = self._get_bf_session(record.snapshot_key)
+        return await getattr(self, f"_{tool_name}")(bf)
 
     async def run_all_tools(self, user_id: str, snapshot_id: str) -> dict:
-        """All tools concurrently. Ownership checked once by ID, shared across all."""
         record = self._require_snapshot_access(snapshot_id, user_id)
-        snapshot_key = record.snapshot_key
-        bf = self._get_bf_session(snapshot_key)
-
+        bf = self._get_bf_session(record.snapshot_key)
         results = await asyncio.gather(
             *[getattr(self, f"_{t}")(bf) for t in TOOLS],
             return_exceptions=True,
@@ -380,7 +314,7 @@ class BatfishService:
             for tool, r in zip(TOOLS, results)
         }
 
-    # ── RCA Tool implementations ──────────────────────────────────────────────
+    # ── RCA TOOLS ─────────────────────────────────────────────────────────────
 
     async def _get_device_os_inventory(self, bf: Session) -> str:
         def _fetch():
@@ -482,7 +416,7 @@ class BatfishService:
                 output.append(
                     f"  └─ Peer IP: {row.get('Remote_IP','?')} | "
                     f"Local AS: {row.get('Local_AS','?')} -> Remote AS: {row.get('Remote_AS','?')} | "
-                    f"Status:[⚠️ {row.get('Configured_Status','?')}]"
+                    f"Status: [⚠️ {row.get('Configured_Status','?')}]"
                 )
         return "\n".join(output)
 
@@ -515,7 +449,7 @@ class BatfishService:
             output.append(f"\nNode: {node}")
             for _, row in group.iterrows():
                 output.append(
-                    f"  └─ Unused[{row.get('Structure_Type','?')}]: '{row.get('Structure_Name','?')}'"
+                    f"  └─ Unused [{row.get('Structure_Type','?')}]: '{row.get('Structure_Name','?')}'"
                 )
         return "\n".join(output)
 
@@ -566,7 +500,7 @@ class BatfishService:
                 )
         return "\n".join(output)
 
-    # ── Health ────────────────────────────────────────────────────────────────
+    # ── HEALTH ────────────────────────────────────────────────────────────────
 
     def check_health(self) -> dict:
         import urllib.request
@@ -578,7 +512,37 @@ class BatfishService:
         except Exception as e:
             raise ConnectionError(f"Batfish unreachable: {e}")
 
-    # ── Internal ──────────────────────────────────────────────────────────────
+    # ── INTERNAL ──────────────────────────────────────────────────────────────
+
+    def _stage_configs(self, snapshot_key: str, configs_root: str) -> List[str]:
+        root = Path(configs_root)
+        if not root.exists():
+            raise FileNotFoundError(f"configs_root not found: {root}")
+        candidates = list(root.rglob("*startup-config.cfg"))
+        if not candidates:
+            candidates = list(root.rglob("*.cfg"))
+        if not candidates:
+            raise FileNotFoundError(f"No config files found under {root}")
+        dest = SNAPSHOT_ROOT / snapshot_key / "configs"
+        dest.mkdir(parents=True, exist_ok=True)
+        for old in dest.glob("*.cfg"):
+            old.unlink()
+        staged = []
+        for cfg_path in candidates:
+            text = cfg_path.read_text(errors="ignore")
+            hostname = self._extract_hostname(text) or f"device_{uuid.uuid4().hex[:6]}"
+            dest_file = dest / f"{hostname}.cfg"
+            if dest_file.exists():
+                dest_file = dest / f"{hostname}_{uuid.uuid4().hex[:4]}.cfg"
+            shutil.copy(cfg_path, dest_file)
+            staged.append(hostname)
+        return staged
+
+    def _push_to_batfish(self, snapshot_key: str):
+        snapshot_path = SNAPSHOT_ROOT / snapshot_key
+        bf = Session(host=BATFISH_HOST, port=BATFISH_PORT)
+        bf.set_network(BATFISH_NETWORK)
+        bf.init_snapshot(str(snapshot_path), name=snapshot_key, overwrite=True)
 
     @staticmethod
     def _extract_hostname(cfg_text: str) -> str:
