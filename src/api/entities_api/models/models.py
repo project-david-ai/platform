@@ -591,6 +591,114 @@ class FileStorage(Base):
     __table_args__ = (Index("idx_file_storage_file_id", "file_id"),)
 
 
+class BatfishSnapshot(Base):
+    """
+    Tenant-isolated Batfish snapshot record.
+
+    Mirrors the VectorStore isolation pattern:
+      - Every snapshot is owned by a single user (user_id FK)
+      - The on-disk snapshot path and Batfish network key are both derived
+        from snapshot_key = f"{user_id}_{snapshot_name}" — globally unique,
+        never guessable from snapshot_name alone
+      - No cross-tenant access is possible without the owning user_id
+
+    Lifecycle:
+      pending    → ingest started, configs being staged
+      loading    → snapshot pushed to Batfish, awaiting parse
+      ready      → all tools callable
+      failed     → ingest or Batfish load error
+      deleted    → soft-deleted, snapshot dir may be purged
+    """
+
+    __tablename__ = "batfish_snapshots"
+
+    id = Column(
+        String(64),
+        primary_key=True,
+        index=True,
+        comment="Shared ID — also used as the Batfish network name",
+    )
+
+    # Human-readable name supplied by the caller e.g. "incident_001"
+    snapshot_name = Column(
+        String(128),
+        nullable=False,
+        comment="Caller-supplied incident/tenant label",
+    )
+
+    # Globally unique namespaced key: {user_id}_{snapshot_name}
+    # Used as the on-disk directory name and Batfish snapshot identifier
+    snapshot_key = Column(
+        String(256),
+        nullable=False,
+        unique=True,
+        index=True,
+        comment="Namespaced isolation key: {user_id}_{snapshot_name}",
+    )
+
+    # Ownership — mirrors VectorStore.user_id pattern
+    user_id = Column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Config source path used during ingest (recorded for auditability)
+    configs_root = Column(
+        String(512),
+        nullable=True,
+        comment="Server-side path used during last ingest",
+    )
+
+    # Device inventory captured at ingest time
+    device_count = Column(Integer, default=0, nullable=False)
+    devices = Column(
+        JSON,
+        default=list,
+        nullable=False,
+        comment="List of hostnames ingested into this snapshot",
+    )
+
+    # Lifecycle status — mirrors StatusEnum pattern
+    status = Column(
+        SAEnum(StatusEnum),
+        nullable=False,
+        default=StatusEnum.pending,
+        comment="pending | loading | ready | failed | deleted",
+    )
+
+    error_message = Column(Text, nullable=True)
+
+    # Timestamps
+    created_at = Column(
+        BigInteger,
+        default=lambda: int(time.time()),
+        nullable=False,
+    )
+    updated_at = Column(
+        BigInteger,
+        default=lambda: int(time.time()),
+        onupdate=lambda: int(time.time()),
+        nullable=False,
+    )
+    last_ingested_at = Column(
+        BigInteger,
+        nullable=True,
+        comment="Unix timestamp of last successful config ingest",
+    )
+
+    # Relationships
+    user = relationship("User", lazy="select")
+
+    __table_args__ = (
+        # A user can have many snapshots but each name must be unique per user
+        UniqueConstraint("user_id", "snapshot_name", name="uq_batfish_user_snapshot"),
+        Index("idx_batfish_user_id", "user_id"),
+        Index("idx_batfish_status", "status"),
+    )
+
+
 class VectorStore(Base):
     __tablename__ = "vector_stores"
     id = Column(String(64), primary_key=True, index=True)

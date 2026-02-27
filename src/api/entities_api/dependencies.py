@@ -14,6 +14,7 @@ from entities_api.cache.inventory_cache import InventoryCache
 from entities_api.cache.message_cache import MessageCache
 from entities_api.cache.scratchpad_cache import ScratchpadCache
 from entities_api.cache.web_cache import WebSessionCache
+from entities_api.services.batfish_service import BatfishService
 from entities_api.services.inventory_service import InventoryService  # ✅ ADDED
 # --- SERVICE IMPORTS ---
 from entities_api.services.scratchpad_service import ScratchpadService
@@ -168,3 +169,12 @@ async def get_inventory_service(
     Automatically handles the Redis connection via InventoryCache.
     """
     return InventoryService(inventory_cache=cache)
+
+
+# 2. Add this function at the bottom of the file:
+async def get_batfish_service() -> BatfishService:
+    """
+    Injects the BatfishService for snapshot ingestion and RCA query execution.
+    No external dependencies required — reads from env vars for host/port.
+    """
+    return BatfishService()
