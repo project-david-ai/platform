@@ -19,7 +19,7 @@ client = Entity(
 # ------------------------------------------------------------------
 # Option B — pass the container-side path explicitly
 snapshot = client.batfish.create_snapshot(
-    snapshot_name="incident_00132",
+    snapshot_name="incident_00133",
     configs_root="/data/gns3/configs_for_batfish",
 )
 # time.sleep(1000)
@@ -37,7 +37,7 @@ snapshot_id = snapshot.id
 # ------------------------------------------------------------------
 # 3.  Run a single RCA tool (what the LLM agent calls per function call)
 # ------------------------------------------------------------------
-result = client.batfish.run_tool(snapshot_id, "get_logical_topology_with_mtu")
+result = client.batfish.run_tool(snapshot_id, "get_ospf_failures")
 print(result["result"])
 
 # ------------------------------------------------------------------
@@ -68,7 +68,7 @@ for s in snapshots:
 # ------------------------------------------------------------------
 # 7.  Soft-delete when done
 # ------------------------------------------------------------------
-client.batfish.delete_snapshot(snapshot_id)
+# client.batfish.delete_snapshot(snapshot_id)
 
 # ------------------------------------------------------------------
 # 8.  Health check
@@ -79,4 +79,4 @@ print(health)  # {"status": "reachable", "host": "batfish", "port": 9996}
 # -------------------------------
 # Delete
 # --------------------------------
-client.batfish.list_snapshots()
+# client.batfish.list_snapshots()

@@ -11,7 +11,7 @@ from projectdavid_common.validation import StatusEnum
 
 LOG = LoggingUtility()
 
-_DEFAULT_SNAPSHOT_ID = "incident_001"
+_DEFAULT_SNAPSHOT_ID = "snap_4e05e65ce5b549febd89"
 
 
 def _status(run_id: str, tool: str, message: str, status: str = "running") -> str:

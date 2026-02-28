@@ -150,6 +150,7 @@ class QwenBaseWorker(
         # ------------------------------------------------------------------
         # Ephemeral supervisor / delegation state
         # ------------------------------------------------------------------
+        self._run_user_id = None
         self.ephemeral_supervisor_id = None
         self._scratch_pad_thread = None
         self._delegation_api_key = api_key
@@ -259,6 +260,24 @@ class QwenBaseWorker(
                 junior_engineer_setting,
                 web_access_setting,
             )
+
+            # ------------------------------------------------------------------
+            # CAPTURE REAL USER ID — before any identity swap mutates state.
+            # This is the user who owns the run, thread, and all snapshots.
+            # Must be set before _handle_role_based_identity_swap().
+            # ------------------------------------------------------------------
+            try:
+                run = await asyncio.to_thread(self.project_david_client.runs.retrieve_run, run_id)
+                self._run_user_id = getattr(run, "user_id", None)
+                LOG.info("STREAM ▸ Captured run_user_id=%s", self._run_user_id)
+            except Exception as e:
+                self._run_user_id = None
+                LOG.warning("STREAM ▸ Could not resolve run_user_id: %s", e)
+
+            # ------------------------------------------------------------------
+            # 5. IDENTITY SWAP (Supervisor roles only)
+            # ------------------------------------------------------------------
+            await self._handle_role_based_identity_swap(requested_model=pre_mapped_model)
 
             # ------------------------------------------------------------------
             # 5. IDENTITY SWAP (Supervisor roles only)
