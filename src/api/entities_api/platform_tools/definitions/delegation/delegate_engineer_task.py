@@ -5,26 +5,28 @@ delegate_engineer_task = {
     "function": {
         "name": "delegate_engineer_task",
         "description": (
-            "Delegate a Batfish Root Cause Analysis task to a Junior Network Engineer. "
-            "The Junior will execute the specified Batfish RCA tools against the loaded "
+            "Delegate a SINGLE Batfish Root Cause Analysis task to a Junior Network Engineer. "
+            "The Junior will execute the specified Batfish RCA tool against the loaded "
             "static config snapshot, evaluate the JSON output against your flag criteria, "
             "and return a synthesized evidence summary directly to you. "
-            "You must specify which Batfish tools to run — the Junior handles execution. "
-            "Available tools: get_ospf_failures, get_bgp_failures, get_routing_loop_detection, "
-            "get_acl_shadowing, get_undefined_references, get_unused_structures, "
-            "get_logical_topology_with_mtu."
+            "You MUST delegate exactly ONE tool at a time. Wait for the result before delegating another."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "batfish_tools": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Ordered list of Batfish RCA tool names for the Junior to execute. "
-                        "Example: ['get_ospf_failures', 'get_undefined_references']"
-                    ),
-                    "minItems": 1,
+                "batfish_tool": {
+                    "type": "string",
+                    "enum": [
+                        "get_device_os_inventory",
+                        "get_logical_topology_with_mtu",
+                        "get_ospf_failures",
+                        "get_bgp_failures",
+                        "get_undefined_references",
+                        "get_unused_structures",
+                        "get_acl_shadowing",
+                        "get_routing_loop_detection",
+                    ],
+                    "description": "The exact name of the ONE Batfish RCA tool the Junior should run.",
                 },
                 "task_context": {
                     "type": "string",
@@ -43,7 +45,7 @@ delegate_engineer_task = {
                     ),
                 },
             },
-            "required": ["batfish_tools", "task_context", "flag_criteria"],
+            "required": ["batfish_tool", "task_context", "flag_criteria"],
             "additionalProperties": False,
         },
     },

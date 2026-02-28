@@ -17,8 +17,8 @@ from entities_api.orchestration.engine.orchestrator_core import \
 from src.api.entities_api.dependencies import get_redis
 from src.api.entities_api.orchestration.mixins import (
     AssistantCacheMixin, CodeExecutionMixin, ConsumerToolHandlersMixin,
-    ConversationContextMixin, FileSearchMixin, JsonUtilsMixin,
-    PlatformToolHandlersMixin, ShellExecutionMixin, ToolRoutingMixin)
+    ContextMixin, FileSearchMixin, JsonUtilsMixin, PlatformToolHandlersMixin,
+    ShellExecutionMixin, ToolRoutingMixin)
 # TODO: Move this to the clients cache
 from src.api.entities_api.orchestration.workers.deepseek.deepseek_async_client import \
     AsyncDeepSeekClient
@@ -30,7 +30,7 @@ LOG = LoggingUtility()
 class _ProviderMixins(
     AssistantCacheMixin,
     JsonUtilsMixin,
-    ConversationContextMixin,
+    ContextMixin,
     ToolRoutingMixin,
     PlatformToolHandlersMixin,
     ConsumerToolHandlersMixin,

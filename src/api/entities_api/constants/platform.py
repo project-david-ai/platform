@@ -9,9 +9,27 @@ PLATFORM_TOOLS = [
     "search_web_page",
     "scroll_web_page",
     "read_web_page",
+    "perform_web_search",
     "vector_store_search",
     "computer",
+    "delegate_research_task",
+    "delegate_engineer_task",
+    "read_scratchpad",
+    "update_scratchpad",
+    "append_scratchpad",
+    "get_device_info",
+    "search_inventory_by_group",
+    "run_batfish_tool",
+    "get_device_os_inventory",
+    "get_logical_topology_with_mtu",
+    "get_ospf_failures",
+    "get_bgp_failures",
+    "get_undefined_references",
+    "get_unused_structures",
+    "get_acl_shadowing",
+    "get_routing_loop_detection",
 ]
+
 
 TOOLS_ID_MAP = {
     "code_interpreter": "tool_79YkQEz5cDwpJjnR7oJ80D",

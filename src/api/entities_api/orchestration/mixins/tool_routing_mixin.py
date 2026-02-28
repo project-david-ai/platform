@@ -38,7 +38,9 @@ class ToolRoutingMixin:
     def get_tool_response_state(self) -> bool:
         return self._tool_response
 
-    def set_function_call_state(self, value: Optional[Union[Dict, List[Dict]]] = None) -> None:
+    def set_function_call_state(
+        self, value: Optional[Union[Dict, List[Dict]]] = None
+    ) -> None:
         if value is None:
             self._function_calls = []
         elif isinstance(value, dict):
@@ -82,12 +84,15 @@ class ToolRoutingMixin:
     def parse_and_set_function_calls(
         self, accumulated_content: str, assistant_reply: str
     ) -> List[Dict]:
-        from src.api.entities_api.orchestration.mixins.json_utils_mixin import JsonUtilsMixin
+        from src.api.entities_api.orchestration.mixins.json_utils_mixin import \
+            JsonUtilsMixin
 
         if not isinstance(self, JsonUtilsMixin):
             raise TypeError("ToolRoutingMixin must be mixed with JsonUtilsMixin")
 
-        body_to_scan = re.sub(r"<plan>.*?</plan>", "", accumulated_content, flags=re.DOTALL)
+        body_to_scan = re.sub(
+            r"<plan>.*?</plan>", "", accumulated_content, flags=re.DOTALL
+        )
 
         matches = self.FC_REGEX.finditer(body_to_scan)
         results = []
@@ -140,6 +145,13 @@ class ToolRoutingMixin:
         Orchestrates the execution of a detected batch of tool calls.
         Level 3: Iterates through the batch, propagating IDs for history linking.
         """
+
+        # CONFIRMED  - this works
+        owner_id = self._batfish_owner_user_id
+
+        LOG.info("TOOL-ROUTER ▸ The Real OwnerID: %s", owner_id)
+        # Arguments: ('user_BG5JyzwSLb4dVfDqzJoH8u',)
+
         batch = self.get_function_call_state()
         if not batch:
             return
@@ -154,7 +166,9 @@ class ToolRoutingMixin:
 
             if not name and decision:
                 inferred_name = (
-                    decision.get("tool") or decision.get("function") or decision.get("name")
+                    decision.get("tool")
+                    or decision.get("function")
+                    or decision.get("name")
                 )
                 if inferred_name:
                     name = inferred_name
@@ -162,7 +176,9 @@ class ToolRoutingMixin:
                         args = fc
 
             if not name:
-                LOG.error("TOOL-ROUTER ▸ Failed to resolve tool name for item in batch.")
+                LOG.error(
+                    "TOOL-ROUTER ▸ Failed to resolve tool name for item in batch."
+                )
                 continue
 
             LOG.info("TOOL-ROUTER ▶ dispatching: %s (ID: %s)", name, current_call_id)
@@ -317,7 +333,7 @@ class ToolRoutingMixin:
                     arguments_dict=args,
                     tool_call_id=current_call_id,
                     decision=decision,
-                    user_id=run_user_id,
+                    user_id=self._run_user_id,
                 ):
                     yield chunk
 
@@ -329,67 +345,142 @@ class ToolRoutingMixin:
                     arguments_dict=args,
                     tool_call_id=current_call_id,
                     decision=decision,
-                    user_id=run_user_id,
+                    user_id=self._run_user_id,
                 ):
                     yield chunk
 
-            # ---------------------------------------------------------
-            # BATFISH / NETWORK ANALYSIS TOOLS
-            # These are the only Batfish tools exposed to the junior
-            # network engineer agent. Snapshot lifecycle operations
-            # (refresh, get, list, delete) are SDK-only and are NOT
-            # routed here — they are called directly by platform code.
-            # ---------------------------------------------------------
-            elif name == "run_batfish_tool":
-                async for chunk in self.handle_run_batfish_tool(
+                # ---------------------------------------------------------
+                # BATFISH ANALYSIS TOOLS (Junior Engineer Direct Dispatch)
+                # Each tool maps to a dedicated handler that uses the
+                # Senior's batfish_owner_user_id for snapshot scope.
+                # ---------------------------------------------------------
+            elif name == "get_device_os_inventory":
+                LOG.info(
+                    "TOOL-ROUTER ▶ [BATFISH] Routing get_device_os_inventory (user=%s)",
+                    self._batfish_owner_user_id,
+                )
+                async for chunk in self.handle_get_device_os_inventory(
                     thread_id=thread_id,
                     run_id=run_id,
                     assistant_id=assistant_id,
                     arguments_dict=args,
                     tool_call_id=current_call_id,
                     decision=decision,
-                    user_id=self._run_user_id,
+                    user_id=self._batfish_owner_user_id,
                 ):
                     yield chunk
 
-            elif name == "run_all_batfish_tools":
-                async for chunk in self.handle_run_all_batfish_tools(
+            elif name == "get_logical_topology_with_mtu":
+                LOG.info(
+                    "TOOL-ROUTER ▶ [BATFISH] Routing get_logical_topology_with_mtu (user=%s)",
+                    self._batfish_owner_user_id,
+                )
+                async for chunk in self.handle_get_logical_topology_with_mtu(
                     thread_id=thread_id,
                     run_id=run_id,
                     assistant_id=assistant_id,
                     arguments_dict=args,
                     tool_call_id=current_call_id,
                     decision=decision,
-                    user_id=self._run_user_id,
+                    user_id=self._batfish_owner_user_id,
                 ):
                     yield chunk
 
-            # ---------------------------------------------------------
-            # 2. SYSTEM TOOLS (Dynamic/Legacy Routing)
-            # ---------------------------------------------------------
-            elif name in PLATFORM_TOOLS:
-                if name in SPECIAL_CASE_TOOL_HANDLING:
-                    async for chunk in self._process_tool_calls(
-                        thread_id=thread_id,
-                        assistant_id=assistant_id,
-                        content=fc,
-                        run_id=run_id,
-                        tool_call_id=current_call_id,
-                        api_key=api_key,
-                        decision=decision,
-                    ):
-                        yield chunk
-                else:
-                    result = await self._process_platform_tool_calls(
-                        thread_id=thread_id,
-                        assistant_id=assistant_id,
-                        content=fc,
-                        run_id=run_id,
-                        tool_call_id=current_call_id,
-                        decision=decision,
-                    )
-                    if result:
-                        yield result
+            elif name == "get_ospf_failures":
+                LOG.info(
+                    "TOOL-ROUTER ▶ [BATFISH] Routing get_ospf_failures (user=%s)",
+                    self._batfish_owner_user_id,
+                )
+                async for chunk in self.handle_get_ospf_failures(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                    user_id=self._batfish_owner_user_id,
+                ):
+                    yield chunk
+
+            elif name == "get_bgp_failures":
+                LOG.info(
+                    "TOOL-ROUTER ▶ [BATFISH] Routing get_bgp_failures (user=%s)",
+                    self._batfish_owner_user_id,
+                )
+                async for chunk in self.handle_get_bgp_failures(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                    user_id=self._batfish_owner_user_id,
+                ):
+                    yield chunk
+
+            elif name == "get_undefined_references":
+                LOG.info(
+                    "TOOL-ROUTER ▶ [BATFISH] Routing get_undefined_references (user=%s)",
+                    self._batfish_owner_user_id,
+                )
+                async for chunk in self.handle_get_undefined_references(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                    user_id=self._batfish_owner_user_id,
+                ):
+                    yield chunk
+
+            elif name == "get_unused_structures":
+                LOG.info(
+                    "TOOL-ROUTER ▶ [BATFISH] Routing get_unused_structures (user=%s)",
+                    self._batfish_owner_user_id,
+                )
+                async for chunk in self.handle_get_unused_structures(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                    user_id=self._batfish_owner_user_id,
+                ):
+                    yield chunk
+
+            elif name == "get_acl_shadowing":
+                LOG.info(
+                    "TOOL-ROUTER ▶ [BATFISH] Routing get_acl_shadowing (user=%s)",
+                    self._batfish_owner_user_id,
+                )
+                async for chunk in self.handle_get_acl_shadowing(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                    user_id=self._batfish_owner_user_id,
+                ):
+                    yield chunk
+
+            elif name == "get_routing_loop_detection":
+                LOG.info(
+                    "TOOL-ROUTER ▶ [BATFISH] Routing get_routing_loop_detection (user=%s)",
+                    self._batfish_owner_user_id,
+                )
+                async for chunk in self.handle_get_routing_loop_detection(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    assistant_id=assistant_id,
+                    arguments_dict=args,
+                    tool_call_id=current_call_id,
+                    decision=decision,
+                    user_id=self._batfish_owner_user_id,
+                ):
+                    yield chunk
 
             # ---------------------------------------------------------
             # 3. CONSUMER TOOLS (Handover to SDK)

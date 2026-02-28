@@ -21,6 +21,7 @@ client = Entity(
 snapshot = client.batfish.create_snapshot(
     snapshot_name="incident_00133",
     configs_root="/data/gns3/configs_for_batfish",
+    user_id="user_BG5JyzwSLb4dVfDqzJoH8u",
 )
 # time.sleep(1000)
 print(snapshot.id)  # e.g. "snap_a1b2c3d4"

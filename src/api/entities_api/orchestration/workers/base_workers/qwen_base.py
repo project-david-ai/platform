@@ -1,4 +1,3 @@
-# src/api/entities_api/workers/qwen_worker.py
 from __future__ import annotations
 
 import asyncio
@@ -55,6 +54,7 @@ class QwenBaseWorker(
         # ephemeral worker config
         # These objects are used for deep search and engineering flows
         self.is_deep_research = None
+        self._batfish_owner_user_id: str | None = None
         self.is_engineer = None
         self._delete_ephemeral_thread = delete_ephemeral_thread or extra.get(
             "delete_ephemeral_thread"
@@ -208,9 +208,12 @@ class QwenBaseWorker(
 
             # Extract from meta_data for dynamic ephemeral flags
             raw_meta = self.assistant_config.get("meta_data", {})
-            junior_engineer_setting = (
-                str(raw_meta.get("junior_engineer_calling", False)).lower() == "true"
+
+            # Check for "junior_engineer" (and fallback to "junior_engineer_calling" just in case)
+            is_junior_val = raw_meta.get(
+                "junior_engineer", raw_meta.get("junior_engineer_calling", False)
             )
+            junior_engineer_setting = str(is_junior_val).lower() == "true"
 
             # ------------------------------------------------------------------
             # 4. ROLE CONFLICT RESOLUTION
@@ -265,19 +268,35 @@ class QwenBaseWorker(
             # CAPTURE REAL USER ID — before any identity swap mutates state.
             # This is the user who owns the run, thread, and all snapshots.
             # Must be set before _handle_role_based_identity_swap().
+            #
+            # For Junior Engineer runs: the Senior stamps batfish_owner_user_id
+            # into the run's meta_data at creation time. We read it back here
+            # so the Junior's worker instance uses the correct snapshot owner,
+            # not its own user_id (which is None for ephemeral runs).
             # ------------------------------------------------------------------
+            from projectdavid import Entity
+
+            client = Entity(api_key=os.environ.get("ADMIN_API_KEY"))
+
             try:
-                run = await asyncio.to_thread(self.project_david_client.runs.retrieve_run, run_id)
-                self._run_user_id = getattr(run, "user_id", None)
-                LOG.info("STREAM ▸ Captured run_user_id=%s", self._run_user_id)
+                run = await asyncio.to_thread(client.runs.retrieve_run, run_id=run_id)
+                self._run_user_id = run.user_id
+
+                # Check if a parent Senior stamped the real snapshot owner into metadata
+                meta_owner = (run.meta_data or {}).get("batfish_owner_user_id")
+
+                if self._batfish_owner_user_id is None:
+                    self._batfish_owner_user_id = meta_owner or run.user_id
+
+                LOG.info(
+                    "STREAM ▸ Captured run_user_id=%s | batfish_owner=%s | meta_owner=%s",
+                    self._run_user_id,
+                    self._batfish_owner_user_id,
+                    meta_owner,
+                )
             except Exception as e:
                 self._run_user_id = None
                 LOG.warning("STREAM ▸ Could not resolve run_user_id: %s", e)
-
-            # ------------------------------------------------------------------
-            # 5. IDENTITY SWAP (Supervisor roles only)
-            # ------------------------------------------------------------------
-            await self._handle_role_based_identity_swap(requested_model=pre_mapped_model)
 
             # ------------------------------------------------------------------
             # 5. IDENTITY SWAP (Supervisor roles only)
@@ -306,9 +325,9 @@ class QwenBaseWorker(
                 decision_telemetry=decision_telemetry,
                 web_access=web_access_setting,
                 deep_research=self.is_deep_research,
-                engineer=self.is_engineer,  # ← new signal
+                engineer=self.is_engineer,
                 research_worker=research_worker_setting,
-                junior_engineer=junior_engineer_setting,  # ← new signal
+                junior_engineer=junior_engineer_setting,
             )
 
             if not api_key:

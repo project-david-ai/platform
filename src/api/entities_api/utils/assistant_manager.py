@@ -104,15 +104,20 @@ class AssistantManager:
         return await asyncio.to_thread(self.client.threads.create_thread)
 
     async def create_ephemeral_junior_engineer(self):
+        """
+        Spawns the Junior Engineer worker for Batfish analysis.
+        STRICTLY sets web_access=False and deep_research=False to prevent
+        the orchestrator from injecting web tools or the Research instructions.
+        """
 
         ephemeral_worker = await asyncio.to_thread(
             self.client.assistants.create_assistant,
-            name=f"worker_{uuid.uuid4().hex[:8]}",
-            description="Temp assistant for deep research",
+            name=f"junior_eng_{uuid.uuid4().hex[:8]}",
+            description="Temp Junior Network Engineer for Batfish RCA",
             tools=JUNIOR_ENGINEER_TOOLS,
-            web_access=True,
+            web_access=False,
             deep_research=False,
-            meta_data={"junior_engineer": True},
+            meta_data={"junior_engineer": "true"},
         )
 
         return ephemeral_worker

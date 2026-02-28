@@ -182,7 +182,11 @@ class DelegationMixin:
                     run_id=run_id,
                 )
 
-                status_value = run.status.value if hasattr(run.status, "value") else str(run.status)
+                status_value = (
+                    run.status.value
+                    if hasattr(run.status, "value")
+                    else str(run.status)
+                )
 
                 LOG.critical(
                     "██████ [DELEGATE_POLL] run_id=%s status=%s elapsed=%.1fs ██████",
@@ -206,7 +210,9 @@ class DelegationMixin:
             elapsed += poll_interval
 
         LOG.error("❌ [DELEGATE_POLL] run_id=%s timed out after %ss.", run_id, timeout)
-        raise asyncio.TimeoutError(f"Worker run {run_id} did not complete within {timeout}s")
+        raise asyncio.TimeoutError(
+            f"Worker run {run_id} did not complete within {timeout}s"
+        )
 
     # ------------------------------------------------------------------
     # HELPER: Poll action status until terminal state or timeout.
@@ -257,7 +263,9 @@ class DelegationMixin:
                     return status_value == "completed"
 
             except Exception as e:
-                LOG.warning("⚠️[ENGINEER_DELEGATE] Poll error for action %s: %s", action_id, e)
+                LOG.warning(
+                    "⚠️[ENGINEER_DELEGATE] Poll error for action %s: %s", action_id, e
+                )
 
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
@@ -441,10 +449,14 @@ class DelegationMixin:
                 continue
 
             # 🛑 GUARD 2: Drop tool call argument frames
-            if getattr(event, "tool_calls", None) or getattr(event, "function_call", None):
+            if getattr(event, "tool_calls", None) or getattr(
+                event, "function_call", None
+            ):
                 continue
 
-            chunk_content = getattr(event, "content", None) or getattr(event, "text", None)
+            chunk_content = getattr(event, "content", None) or getattr(
+                event, "text", None
+            )
             chunk_reasoning = getattr(event, "reasoning", None)
 
             if chunk_reasoning:
@@ -482,7 +494,9 @@ class DelegationMixin:
         """
 
         try:
-            run = await asyncio.to_thread(self.project_david_client.runs.retrieve_run, run_id)
+            run = await asyncio.to_thread(
+                self.project_david_client.runs.retrieve_run, run_id
+            )
             self._run_user_id = getattr(run, "user_id", None)
             LOG.info("STREAM ▸ Captured run_user_id=%s", self._run_user_id)
         except Exception as e:
@@ -501,7 +515,9 @@ class DelegationMixin:
         else:
             args = arguments_dict
 
-        yield self._research_status("Initializing delegation worker...", "in_progress", run_id)
+        yield self._research_status(
+            "Initializing delegation worker...", "in_progress", run_id
+        )
 
         action = None
         try:
@@ -540,7 +556,9 @@ class DelegationMixin:
                 ephemeral_worker.id, ephemeral_thread.id
             )
 
-            yield self._research_status("Worker active. Streaming...", "in_progress", run_id)
+            yield self._research_status(
+                "Worker active. Streaming...", "in_progress", run_id
+            )
 
             LOG.info(f"🔄[SUPERVISORS_THREAD_ID]: {thread_id}")
             LOG.info(f"🔄[WORKERS_THREAD_ID]: {self._research_worker_thread}")
@@ -564,10 +582,14 @@ class DelegationMixin:
                     final_run_status,
                 )
             except asyncio.TimeoutError:
-                LOG.error("⏳ [RESEARCH_DELEGATE] Worker run timed out. Attempting fetch anyway.")
+                LOG.error(
+                    "⏳ [RESEARCH_DELEGATE] Worker run timed out. Attempting fetch anyway."
+                )
                 execution_had_error = True
 
-            final_content = await self._fetch_worker_final_report(thread_id=ephemeral_thread.id)
+            final_content = await self._fetch_worker_final_report(
+                thread_id=ephemeral_thread.id
+            )
 
             LOG.critical(
                 "██████ [FINAL_THREAD_CONTENT_SUBMITTED_BY_RESEARCH_WORKER]=%s ██████",
@@ -608,7 +630,9 @@ class DelegationMixin:
 
         finally:
             if ephemeral_worker:
-                thread_id_to_clean = ephemeral_thread.id if ephemeral_thread else "unknown_thread"
+                thread_id_to_clean = (
+                    ephemeral_thread.id if ephemeral_thread else "unknown_thread"
+                )
                 await self._ephemeral_clean_up(
                     ephemeral_worker.id,
                     thread_id_to_clean,
@@ -659,7 +683,9 @@ class DelegationMixin:
         batfish_tools = args.get("batfish_tools", [])
         task_context = args.get("task_context", "No context provided.")
         flag_criteria = args.get("flag_criteria", "None specified.")
-        snapshot_id = args.get("snapshot_id", _DEFAULT_SNAPSHOT_ID)  # FIX: use canonical default
+        snapshot_id = args.get(
+            "snapshot_id", _DEFAULT_SNAPSHOT_ID
+        )  # FIX: use canonical default
 
         # 2. Yield Initial Status
         yield self._engineer_status(
@@ -670,7 +696,9 @@ class DelegationMixin:
 
         # 3. Reject invalid delegations immediately
         if not batfish_tools:
-            LOG.error("❌[ENGINEER_DELEGATE] Senior delegated task with NO Batfish tools.")
+            LOG.error(
+                "❌[ENGINEER_DELEGATE] Senior delegated task with NO Batfish tools."
+            )
             await self.submit_tool_output(
                 thread_id=thread_id,
                 assistant_id=assistant_id,
@@ -679,7 +707,9 @@ class DelegationMixin:
                 action=None,
                 is_error=True,
             )
-            yield self._engineer_status("Delegation rejected: Empty tools.", "error", run_id)
+            yield self._engineer_status(
+                "Delegation rejected: Empty tools.", "error", run_id
+            )
             return
 
         # 4. Create Action (DB)
@@ -721,7 +751,9 @@ class DelegationMixin:
                         res if res else "✅ Tool executed: No issues found."
                     )
                 except Exception as e:
-                    batfish_results[tool_name] = f"Error executing {tool_name}: {str(e)}"
+                    batfish_results[tool_name] = (
+                        f"Error executing {tool_name}: {str(e)}"
+                    )
 
             # 5. Setup Ephemeral Assistant & Thread
             ephemeral_junior = await self.create_ephemeral_junior_engineer()
@@ -777,10 +809,14 @@ class DelegationMixin:
                 ):
                     continue
 
-                if getattr(event, "tool_calls", None) or getattr(event, "function_call", None):
+                if getattr(event, "tool_calls", None) or getattr(
+                    event, "function_call", None
+                ):
                     continue
 
-                chunk_content = getattr(event, "content", None) or getattr(event, "text", None)
+                chunk_content = getattr(event, "content", None) or getattr(
+                    event, "text", None
+                )
                 chunk_reasoning = getattr(event, "reasoning", None)
 
                 if chunk_reasoning:
@@ -824,11 +860,15 @@ class DelegationMixin:
                     final_run_status,
                 )
             except asyncio.TimeoutError:
-                LOG.error("⏳[ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway.")
+                LOG.error(
+                    "⏳[ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway."
+                )
                 execution_had_error = True
 
             # 8. Fetch final report
-            final_content = await self._fetch_worker_final_report(thread_id=ephemeral_thread.id)
+            final_content = await self._fetch_worker_final_report(
+                thread_id=ephemeral_thread.id
+            )
 
             if not final_content:
                 final_content = "⚠️ Junior Engineer failed to produce a report."
@@ -862,7 +902,9 @@ class DelegationMixin:
 
         finally:
             if ephemeral_junior:
-                thread_id_to_clean = ephemeral_thread.id if ephemeral_thread else "unknown_thread"
+                thread_id_to_clean = (
+                    ephemeral_thread.id if ephemeral_thread else "unknown_thread"
+                )
                 await self._ephemeral_clean_up(
                     ephemeral_junior.id,
                     thread_id_to_clean,

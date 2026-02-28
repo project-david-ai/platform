@@ -1,4 +1,4 @@
-# src/api/entities_api/orchestration/mixins/conversation_context_mixin.py
+# src/api/entities_api/orchestration/mixins/context_mixin.py
 import asyncio
 import json
 import os
@@ -22,7 +22,7 @@ from src.api.entities_api.services.logging_service import LoggingUtility
 LOG = LoggingUtility()
 
 
-class ConversationContextMixin:
+class ContextMixin:
     _message_cache = None
 
     @property

@@ -1,14 +1,16 @@
 # src/api/entities_api/orchestration/mixins/__init__.py
 from src.api.entities_api.orchestration.mixins.assistant_cache_mixin import \
     AssistantCacheMixin
+from src.api.entities_api.orchestration.mixins.batfish_mixin import \
+    BatfishMixin
 from src.api.entities_api.orchestration.mixins.client_factory_mixin import \
     ClientFactoryMixin
 from src.api.entities_api.orchestration.mixins.code_execution_mixin import \
     CodeExecutionMixin
 from src.api.entities_api.orchestration.mixins.consumer_tool_handlers_mixin import \
     ConsumerToolHandlersMixin
-from src.api.entities_api.orchestration.mixins.conversation_context_mixin import \
-    ConversationContextMixin
+from src.api.entities_api.orchestration.mixins.context_mixin import \
+    ContextMixin
 from src.api.entities_api.orchestration.mixins.delegation_mixin import \
     DelegationMixin
 from src.api.entities_api.orchestration.mixins.device_inventory_mixin import \
@@ -36,8 +38,10 @@ __all__ = [
     "ClientFactoryMixin",
     "ServiceRegistryMixin",
     "JsonUtilsMixin",
-    "ConversationContextMixin",
+    "ContextMixin",
     "AssistantCacheMixin",
+    "DelegationMixin",
+    "BatfishMixin",
     "ToolRoutingMixin",
     "PlatformToolHandlersMixin",
     "ConsumerToolHandlersMixin",
@@ -47,6 +51,5 @@ __all__ = [
     "FileSearchMixin",
     "WebSearchMixin",
     "ScratchpadMixin",
-    "DelegationMixin",
     "NetworkInventoryMixin",
 ]

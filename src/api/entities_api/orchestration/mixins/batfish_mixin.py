@@ -1,23 +1,32 @@
-# src/api/entities_api/orchestration/mixins/batfish_mixin.py
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any, AsyncGenerator, Dict, Optional
 
 from projectdavid_common import ToolValidator
 from projectdavid_common.utilities.logging_service import LoggingUtility
 from projectdavid_common.validation import StatusEnum
 
+from src.api.entities_api.db.database import SessionLocal
+from src.api.entities_api.services.batfish_service import (BatfishService,
+                                                           BatfishServiceError)
+
 LOG = LoggingUtility()
 
-_DEFAULT_SNAPSHOT_ID = "snap_4e05e65ce5b549febd89"
+_DEFAULT_SNAPSHOT_ID = "snap_774bc864d2ef4e71abb6"
 
 
-def _status(run_id: str, tool: str, message: str, status: str = "running") -> str:
+def _batfish_status(
+    run_id: str, tool: str, message: str, status: str = "running"
+) -> str:
+    """
+    Emit a status event as raw JSON conforming to the stream EVENT_CONTRACT.
+    """
     return json.dumps(
         {
-            "type": "engineer_status",
+            "type": "batfish_status",
             "run_id": run_id,
             "tool": tool,
             "status": status,
@@ -28,191 +37,233 @@ def _status(run_id: str, tool: str, message: str, status: str = "running") -> st
 
 class BatfishMixin:
     """
-    Drives the **Agentic Network Analysis Tools** powered by Batfish.
+    Drive the **Batfish Root Cause Analysis Tools**.
+
+    Features:
+    - Bulletproof action tracking and output submission.
+    - Captures run_user_id mapping explicitly (so Junior Engineer queries Batfish using Senior's scope).
+    - Emits real-time stream state tracking.
+    - Queries BatfishService directly — no SDK indirection.
     """
 
+    def _get_batfish_service(self) -> BatfishService:
+        """
+        Lazily instantiate a BatfishService backed by its own SessionLocal session.
+        The session is reused for the lifetime of this mixin instance.
+        """
+        if not hasattr(self, "_batfish_service") or self._batfish_service is None:
+            self._batfish_service = BatfishService(SessionLocal())
+        return self._batfish_service
+
     @staticmethod
-    def _format_batfish_error(tool_name: str, error_content: str, inputs: Dict[str, Any]) -> str:
+    def _format_batfish_tool_error(
+        tool_name: str, error_content: str, inputs: Dict
+    ) -> str:
+        """Translates Batfish failures into actionable instructions for the LLM."""
         if not error_content:
             error_content = "Unknown Error (Empty Response)"
 
         error_lower = error_content.lower()
 
-        if "validation" in error_lower or "missing" in error_lower:
+        if "validation error" in error_lower or "missing arguments" in error_lower:
             return (
                 f"❌ SCHEMA ERROR: Invalid arguments for '{tool_name}'.\n"
                 f"ERROR DETAILS: {error_content}\n"
-                f"PROVIDED ARGS: {json.dumps(inputs)}\n"
                 "SYSTEM INSTRUCTION: Check the tool definition and retry with valid arguments."
             )
 
-        if "not found" in error_lower:
+        if "404" in error_content or "not found" in error_lower:
             return (
-                f"⚠️ Snapshot not found for tool '{tool_name}'.\n"
-                "SYSTEM INSTRUCTION: The snapshot_id may be invalid or already deleted. "
-            )
-
-        if "not loaded" in error_lower:
-            return (
-                f"⚠️ Snapshot not loaded in Batfish for tool '{tool_name}'.\n"
-                "SYSTEM INSTRUCTION: Call 'refresh_snapshot' to re-ingest and reload."
+                f"❌ Batfish Tool '{tool_name}' Failed: Snapshot or Data Not Found.\n"
+                f"ERROR DETAILS: {error_content}\n"
+                "SYSTEM INSTRUCTION: Verify the snapshot_id or target elements."
             )
 
         return (
             f"❌ Batfish Tool '{tool_name}' Error: {error_content}\n"
-            "SYSTEM INSTRUCTION: Review arguments or report the failure."
+            "SYSTEM INSTRUCTION: The simulation engine encountered an error. Document this failure in your scratchpad."
         )
-
-    # ------------------------------------------------------------------
-    # CORE EXECUTION ENGINE
-    # ------------------------------------------------------------------
 
     async def _execute_batfish_tool_logic(
         self,
         tool_name: str,
-        required_schema: Dict[str, Any],
+        required_keys: list[str],
         thread_id: str,
         run_id: str,
         assistant_id: str,
         arguments_dict: Dict[str, Any],
         tool_call_id: Optional[str],
         decision: Optional[Dict],
+        actual_batfish_tool: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
+        """
+        Shared core logic for Batfish tools.
+        If `actual_batfish_tool` is provided, we pass that to BatfishService (useful for wrapper tools).
+        Otherwise, we use `tool_name`.
+        """
+
         ts_start = asyncio.get_event_loop().time()
+        target_tool = actual_batfish_tool or tool_name
 
-        yield _status(run_id, tool_name, "Validating parameters...")
+        # --- [1] STATUS: VALIDATING ---
+        yield _batfish_status(
+            run_id, tool_name, f"Validating parameters for {target_tool}..."
+        )
 
-        # --- [1] VALIDATION ---
+        # --- VALIDATION ---
         validator = ToolValidator()
-        validator.schema_registry = {tool_name: required_schema}
+        validator.schema_registry = {tool_name: required_keys}
         validation_error = validator.validate_args(tool_name, arguments_dict)
 
         if validation_error:
             LOG.warning(f"{tool_name} ▸ Validation Failed: {validation_error}")
-            yield _status(
-                run_id,
-                tool_name,
-                f"Validation failed: {validation_error}",
-                status="error",
+            yield _batfish_status(
+                run_id, tool_name, "Validation failed.", status="error"
             )
-            await self.submit_tool_output(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
+
+            error_feedback = self._format_batfish_tool_error(
+                tool_name, f"Validation Error: {validation_error}", arguments_dict
+            )
+
+            try:
+                action = await asyncio.to_thread(
+                    self.project_david_client.actions.create_action,
+                    tool_name=tool_name,
+                    run_id=run_id,
+                    tool_call_id=tool_call_id,
+                    function_args=arguments_dict,
+                    decision=decision,
+                )
+                await self.submit_tool_output(
+                    thread_id=thread_id,
+                    assistant_id=assistant_id,
+                    tool_call_id=tool_call_id,
+                    content=error_feedback,
+                    action=action,
+                    is_error=True,
+                )
+                await asyncio.to_thread(
+                    self.project_david_client.actions.update_action,
+                    action_id=action.id,
+                    status=StatusEnum.failed.value,
+                )
+            except Exception as e:
+                LOG.error(f"Failed to submit validation error: {e}")
+
+            return
+
+        # --- [2] STATUS: CREATING ACTION ---
+        yield _batfish_status(
+            run_id, tool_name, f"Initializing Batfish simulation action..."
+        )
+
+        action = None
+        try:
+            action = await asyncio.to_thread(
+                self.project_david_client.actions.create_action,
+                tool_name=tool_name,
+                run_id=run_id,
                 tool_call_id=tool_call_id,
-                content=self._format_batfish_error(
-                    tool_name, f"Validation Error: {validation_error}", arguments_dict
-                ),
-                action=None,
-                is_error=True,
+                function_args=arguments_dict,
+                decision=decision,
+            )
+        except Exception as e:
+            LOG.error(f"{tool_name} ▸ Action creation failed: {e}")
+            yield _batfish_status(
+                run_id, tool_name, "Internal system error.", status="error"
             )
             return
 
-        # --- [2] CREATE ACTION ---
-        yield _status(run_id, tool_name, "Initializing tool action...")
-        action = await asyncio.to_thread(
-            self.project_david_client.actions.create_action,
-            tool_name=tool_name,
-            run_id=run_id,
-            tool_call_id=tool_call_id,
-            function_args=arguments_dict,
-            decision=decision,
-        )
-
-        # --- [3] DISPATCH ---
+        # --- [3] EXECUTION ---
         try:
-            res = None
-            snapshot_id = arguments_dict.get("snapshot_id") or _DEFAULT_SNAPSHOT_ID
+            # Resolve user_id: explicit arg -> delegate propagation -> run DB -> env fallback
+            user_id = user_id or getattr(self, "_batfish_owner_user_id", None)
+            if not user_id:
+                try:
+                    run_obj = await asyncio.to_thread(
+                        self.project_david_client.runs.retrieve_run, run_id=run_id
+                    )
+                    user_id = run_obj.user_id
+                except Exception:
+                    pass
+            if not user_id:
+                user_id = os.getenv("ENTITIES_USER_ID")
 
-            if not arguments_dict.get("snapshot_id"):
-                LOG.info(f"BATFISH ▸ snapshot_id omitted — fallback: {_DEFAULT_SNAPSHOT_ID}")
+            snapshot_id = arguments_dict.get("snapshot_id", _DEFAULT_SNAPSHOT_ID)
 
-            if tool_name == "refresh_snapshot":
-                yield _status(run_id, tool_name, "Ingesting configs and loading snapshot...")
-                # FIX: pass snapshot_id (not snapshot_name) — client routes to
-                # POST /v1/batfish/snapshots/{snapshot_id}/refresh
-                record = await asyncio.to_thread(
-                    self.project_david_client.batfish.refresh_snapshot,
+            yield _batfish_status(
+                run_id, tool_name, f"Executing '{target_tool}' on dataplane snapshot..."
+            )
+            LOG.info(
+                f"[{run_id}] Executing batfish tool '{target_tool}' for snapshot '{snapshot_id}' (user_id={user_id})"
+            )
+
+            LOG.critical(
+                "[BATFISH DEBUG] user_id=%s | snapshot_id=%s | target_tool=%s",
+                user_id,
+                snapshot_id,
+                target_tool,
+            )
+
+            # --- CALL BATFISH SERVICE DIRECTLY ---
+            try:
+                result = await self._get_batfish_service().run_tool(
+                    user_id=user_id,
                     snapshot_id=snapshot_id,
-                    configs_root=arguments_dict.get("configs_root"),
-                    user_id=user_id,
+                    tool_name=target_tool,
                 )
-                res = record.model_dump() if record else None
+            except BatfishServiceError as svc_err:
+                raise RuntimeError(str(svc_err)) from svc_err
 
-            elif tool_name == "get_snapshot":
-                yield _status(run_id, tool_name, f"Retrieving snapshot '{snapshot_id}'...")
-                record = await asyncio.to_thread(
-                    self.project_david_client.batfish.get_snapshot,
-                    snapshot_id=snapshot_id,
-                    user_id=user_id,
-                )
-                res = record.model_dump() if record else None
-
-            elif tool_name == "list_snapshots":
-                yield _status(run_id, tool_name, "Listing snapshots...")
-                records = await asyncio.to_thread(
-                    self.project_david_client.batfish.list_snapshots,
-                    user_id=user_id,
-                )
-                res = [r.model_dump() for r in records] if records else []
-
-            elif tool_name == "delete_snapshot":
-                yield _status(run_id, tool_name, f"Deleting snapshot '{snapshot_id}'...")
-                success = await asyncio.to_thread(
-                    self.project_david_client.batfish.delete_snapshot,
-                    snapshot_id=snapshot_id,
-                    user_id=user_id,
-                )
-                res = {"deleted": success, "snapshot_id": snapshot_id}
-
-            elif tool_name == "run_batfish_tool":
-                named_tool = arguments_dict["batfish_tool_name"]
-                yield _status(run_id, tool_name, f"Running RCA analysis: {named_tool}...")
-                res = await asyncio.to_thread(
-                    self.project_david_client.batfish.run_tool,
-                    snapshot_id=snapshot_id,
-                    tool_name=named_tool,
-                    user_id=user_id,
-                )
-
-            elif tool_name == "run_all_batfish_tools":
-                yield _status(run_id, tool_name, "Running all RCA tools...")
-                res = await asyncio.to_thread(
-                    self.project_david_client.batfish.run_all_tools,
-                    snapshot_id=snapshot_id,
-                    user_id=user_id,
-                )
+            # Normalise result to string
+            if isinstance(result, dict) and "result" in result:
+                final_content = str(result["result"])
+            elif isinstance(result, str):
+                final_content = result
             else:
-                raise ValueError(f"Unknown Batfish tool: {tool_name}")
+                final_content = json.dumps(result, indent=2)
 
-            # --- [4] RESULT RESOLUTION ---
-            if res is not None and res != [] and res != {}:
-                final_content = json.dumps(res, indent=2)
-                yield _status(run_id, tool_name, "Analysis complete.", status="success")
-                is_error = False
-            else:
-                final_content = "No configuration issues or results found during Batfish execution."
-                yield _status(
+            is_soft_failure = False
+
+            if not final_content or "error" in str(final_content).lower()[0:50]:
+                is_soft_failure = True
+                yield _batfish_status(
                     run_id,
                     tool_name,
-                    "Analysis complete (no issues found).",
+                    "Tool execution returned an error.",
+                    status="warning",
+                )
+                final_content = self._format_batfish_tool_error(
+                    tool_name, final_content or "No Data Returned", arguments_dict
+                )
+            else:
+                yield _batfish_status(
+                    run_id,
+                    tool_name,
+                    "Simulation data retrieved successfully.",
                     status="success",
                 )
-                is_error = False
 
-            # --- [5] UPDATE DB & SUBMIT OUTPUT ---
-            await asyncio.to_thread(
-                self.project_david_client.actions.update_action,
-                action_id=action.id,
-                status=(StatusEnum.completed.value if not is_error else StatusEnum.failed.value),
-            )
+            # --- [4] SUBMIT OUTPUT ---
             await self.submit_tool_output(
                 thread_id=thread_id,
                 assistant_id=assistant_id,
                 tool_call_id=tool_call_id,
                 content=final_content,
                 action=action,
-                is_error=is_error,
+                is_error=is_soft_failure,
+            )
+
+            # --- [5] UPDATE ACTION ---
+            await asyncio.to_thread(
+                self.project_david_client.actions.update_action,
+                action_id=action.id,
+                status=(
+                    StatusEnum.completed.value
+                    if not is_soft_failure
+                    else StatusEnum.failed.value
+                ),
             )
 
             LOG.info(
@@ -223,120 +274,36 @@ class BatfishMixin:
             )
 
         except Exception as exc:
+            # --- [6] HARD FAILURE ---
             LOG.error(f"[{run_id}] {tool_name} HARD FAILURE: {exc}", exc_info=True)
-            yield _status(run_id, tool_name, f"Critical failure: {str(exc)}", status="error")
-            await asyncio.to_thread(
-                self.project_david_client.actions.update_action,
-                action_id=action.id,
-                status=StatusEnum.failed.value,
+            yield _batfish_status(
+                run_id, tool_name, f"Critical failure: {str(exc)}", status="error"
             )
-            await self.submit_tool_output(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-                tool_call_id=tool_call_id,
-                content=self._format_batfish_error(tool_name, str(exc), arguments_dict),
-                action=action,
-                is_error=True,
+
+            error_hint = self._format_batfish_tool_error(
+                tool_name, str(exc), arguments_dict
             )
+
+            try:
+                await asyncio.to_thread(
+                    self.project_david_client.actions.update_action,
+                    action_id=action.id,
+                    status=StatusEnum.failed.value,
+                )
+                await self.submit_tool_output(
+                    thread_id=thread_id,
+                    assistant_id=assistant_id,
+                    tool_call_id=tool_call_id,
+                    content=error_hint,
+                    action=action,
+                    is_error=True,
+                )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # PUBLIC HANDLERS
     # ------------------------------------------------------------------
-
-    async def handle_refresh_snapshot(
-        self,
-        thread_id: str,
-        run_id: str,
-        assistant_id: str,
-        arguments_dict: Dict[str, Any],
-        tool_call_id: Optional[str] = None,
-        decision: Optional[Dict] = None,
-        user_id: Optional[str] = None,
-    ) -> AsyncGenerator[str, None]:
-        # FIX: schema now requires snapshot_id (not snapshot_name) to match
-        # BatfishClient.refresh_snapshot(snapshot_id, ...) and the router
-        # POST /v1/batfish/snapshots/{snapshot_id}/refresh
-        async for event in self._execute_batfish_tool_logic(
-            "refresh_snapshot",
-            {"snapshot_id": str},
-            thread_id,
-            run_id,
-            assistant_id,
-            arguments_dict,
-            tool_call_id,
-            decision,
-            user_id,
-        ):
-            yield event
-
-    async def handle_get_snapshot(
-        self,
-        thread_id: str,
-        run_id: str,
-        assistant_id: str,
-        arguments_dict: Dict[str, Any],
-        tool_call_id: Optional[str] = None,
-        decision: Optional[Dict] = None,
-        user_id: Optional[str] = None,
-    ) -> AsyncGenerator[str, None]:
-        async for event in self._execute_batfish_tool_logic(
-            "get_snapshot",
-            {"snapshot_id": str},
-            thread_id,
-            run_id,
-            assistant_id,
-            arguments_dict,
-            tool_call_id,
-            decision,
-            user_id,
-        ):
-            yield event
-
-    async def handle_list_snapshots(
-        self,
-        thread_id: str,
-        run_id: str,
-        assistant_id: str,
-        arguments_dict: Dict[str, Any],
-        tool_call_id: Optional[str] = None,
-        decision: Optional[Dict] = None,
-        user_id: Optional[str] = None,
-    ) -> AsyncGenerator[str, None]:
-        async for event in self._execute_batfish_tool_logic(
-            "list_snapshots",
-            {},
-            thread_id,
-            run_id,
-            assistant_id,
-            arguments_dict,
-            tool_call_id,
-            decision,
-            user_id,
-        ):
-            yield event
-
-    async def handle_delete_snapshot(
-        self,
-        thread_id: str,
-        run_id: str,
-        assistant_id: str,
-        arguments_dict: Dict[str, Any],
-        tool_call_id: Optional[str] = None,
-        decision: Optional[Dict] = None,
-        user_id: Optional[str] = None,
-    ) -> AsyncGenerator[str, None]:
-        async for event in self._execute_batfish_tool_logic(
-            "delete_snapshot",
-            {"snapshot_id": str},
-            thread_id,
-            run_id,
-            assistant_id,
-            arguments_dict,
-            tool_call_id,
-            decision,
-            user_id,
-        ):
-            yield event
 
     async def handle_run_batfish_tool(
         self,
@@ -348,38 +315,241 @@ class BatfishMixin:
         decision: Optional[Dict] = None,
         user_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
+        actual_tool = arguments_dict.get("tool_name")
         async for event in self._execute_batfish_tool_logic(
-            "run_batfish_tool",
-            {"batfish_tool_name": str},
-            thread_id,
-            run_id,
-            assistant_id,
-            arguments_dict,
-            tool_call_id,
-            decision,
-            user_id,
+            tool_name="run_batfish_tool",
+            required_keys=["tool_name"],
+            thread_id=thread_id,
+            run_id=run_id,
+            assistant_id=assistant_id,
+            arguments_dict=arguments_dict,
+            tool_call_id=tool_call_id,
+            decision=decision,
+            actual_batfish_tool=actual_tool,
+            user_id=user_id,
         ):
             yield event
 
-    async def handle_run_all_batfish_tools(
+    async def handle_get_ospf_failures(
         self,
         thread_id: str,
         run_id: str,
         assistant_id: str,
         arguments_dict: Dict[str, Any],
-        tool_call_id: Optional[str] = None,
-        decision: Optional[Dict] = None,
+        tool_call_id: str,
+        decision: Dict,
         user_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
+        LOG.info(
+            "[BATFISH] handle_get_ospf_failures called (user_id=%s, run_id=%s)",
+            user_id,
+            run_id,
+        )
         async for event in self._execute_batfish_tool_logic(
-            "run_all_batfish_tools",
-            {},
+            "get_ospf_failures",
+            [],
             thread_id,
             run_id,
             assistant_id,
             arguments_dict,
             tool_call_id,
             decision,
+            user_id=user_id,
+        ):
+            yield event
+
+    async def handle_get_bgp_failures(
+        self,
+        thread_id: str,
+        run_id: str,
+        assistant_id: str,
+        arguments_dict: Dict[str, Any],
+        tool_call_id: str,
+        decision: Dict,
+        user_id: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        LOG.info(
+            "[BATFISH] handle_get_bgp_failures called (user_id=%s, run_id=%s)",
             user_id,
+            run_id,
+        )
+        async for event in self._execute_batfish_tool_logic(
+            "get_bgp_failures",
+            [],
+            thread_id,
+            run_id,
+            assistant_id,
+            arguments_dict,
+            tool_call_id,
+            decision,
+            user_id=user_id,
+        ):
+            yield event
+
+    async def handle_get_routing_loop_detection(
+        self,
+        thread_id: str,
+        run_id: str,
+        assistant_id: str,
+        arguments_dict: Dict[str, Any],
+        tool_call_id: str,
+        decision: Dict,
+        user_id: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        LOG.info(
+            "[BATFISH] handle_get_routing_loop_detection called (user_id=%s, run_id=%s)",
+            user_id,
+            run_id,
+        )
+        async for event in self._execute_batfish_tool_logic(
+            "get_routing_loop_detection",
+            [],
+            thread_id,
+            run_id,
+            assistant_id,
+            arguments_dict,
+            tool_call_id,
+            decision,
+            user_id=user_id,
+        ):
+            yield event
+
+    async def handle_get_acl_shadowing(
+        self,
+        thread_id: str,
+        run_id: str,
+        assistant_id: str,
+        arguments_dict: Dict[str, Any],
+        tool_call_id: str,
+        decision: Dict,
+        user_id: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        LOG.info(
+            "[BATFISH] handle_get_acl_shadowing called (user_id=%s, run_id=%s)",
+            user_id,
+            run_id,
+        )
+        async for event in self._execute_batfish_tool_logic(
+            "get_acl_shadowing",
+            [],
+            thread_id,
+            run_id,
+            assistant_id,
+            arguments_dict,
+            tool_call_id,
+            decision,
+            user_id=user_id,
+        ):
+            yield event
+
+    async def handle_get_undefined_references(
+        self,
+        thread_id: str,
+        run_id: str,
+        assistant_id: str,
+        arguments_dict: Dict[str, Any],
+        tool_call_id: str,
+        decision: Dict,
+        user_id: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        LOG.info(
+            "[BATFISH] handle_get_undefined_references called (user_id=%s, run_id=%s)",
+            user_id,
+            run_id,
+        )
+        async for event in self._execute_batfish_tool_logic(
+            "get_undefined_references",
+            [],
+            thread_id,
+            run_id,
+            assistant_id,
+            arguments_dict,
+            tool_call_id,
+            decision,
+            user_id=user_id,
+        ):
+            yield event
+
+    async def handle_get_unused_structures(
+        self,
+        thread_id: str,
+        run_id: str,
+        assistant_id: str,
+        arguments_dict: Dict[str, Any],
+        tool_call_id: str,
+        decision: Dict,
+        user_id: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        LOG.info(
+            "[BATFISH] handle_get_unused_structures called (user_id=%s, run_id=%s)",
+            user_id,
+            run_id,
+        )
+        async for event in self._execute_batfish_tool_logic(
+            "get_unused_structures",
+            [],
+            thread_id,
+            run_id,
+            assistant_id,
+            arguments_dict,
+            tool_call_id,
+            decision,
+            user_id=user_id,
+        ):
+            yield event
+
+    async def handle_get_logical_topology_with_mtu(
+        self,
+        thread_id: str,
+        run_id: str,
+        assistant_id: str,
+        arguments_dict: Dict[str, Any],
+        tool_call_id: str,
+        decision: Dict,
+        user_id: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        LOG.info(
+            "[BATFISH] handle_get_logical_topology_with_mtu called (user_id=%s, run_id=%s)",
+            user_id,
+            run_id,
+        )
+        async for event in self._execute_batfish_tool_logic(
+            "get_logical_topology_with_mtu",
+            [],
+            thread_id,
+            run_id,
+            assistant_id,
+            arguments_dict,
+            tool_call_id,
+            decision,
+            user_id=user_id,
+        ):
+            yield event
+
+    async def handle_get_device_os_inventory(
+        self,
+        thread_id: str,
+        run_id: str,
+        assistant_id: str,
+        arguments_dict: Dict[str, Any],
+        tool_call_id: str,
+        decision: Dict,
+        user_id: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        LOG.info(
+            "[BATFISH] handle_get_device_os_inventory called (user_id=%s, run_id=%s)",
+            user_id,
+            run_id,
+        )
+        async for event in self._execute_batfish_tool_logic(
+            "get_device_os_inventory",
+            [],
+            thread_id,
+            run_id,
+            assistant_id,
+            arguments_dict,
+            tool_call_id,
+            decision,
+            user_id=user_id,
         ):
             yield event
