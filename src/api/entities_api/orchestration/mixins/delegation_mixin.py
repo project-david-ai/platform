@@ -410,7 +410,6 @@ class DelegationMixin:
     # ------------------------------------------------------------------
     # INTERNAL: Shared stream consumer.
     # ------------------------------------------------------------------
-
     async def _stream_worker_inference(
         self,
         ephemeral_thread,
@@ -636,7 +635,7 @@ class DelegationMixin:
             )
 
     # ------------------------------------------------------------------
-    # HANDLER 2: Engineer Delegation (Batfish RCA Data-Plane Simulation)
+    # HANDLER 2: Engineer Delegation (Architectural Shortcut)
     # ------------------------------------------------------------------
     async def handle_delegate_engineer_task(
         self,
@@ -650,14 +649,12 @@ class DelegationMixin:
         """
         Senior Network Engineer → Junior Network Engineer delegation.
 
-        Flow:
-          Turn 1 — Junior plans and fires `run_batfish_tool`.
-                   We intercept the tool call SERVER-SIDE, dynamically inject the snapshot_id,
-                   execute the Batfish RCA tool directly, and submit the JSON output.
-          Turn 2 — Inject an analysis prompt and create a new run so the
-                   Junior can synthesize the JSON into evidence snips.
-          Report — Fetch the Junior's final text and submit it back to the Senior.
+        Refactor: We natively execute the Batfish tools requested by the Senior
+        server-side, and inject the raw JSON directly into the Junior's prompt.
+        This bypasses the parallel tool-calling limitations of the LLM and
+        eliminates `action_required` deadlocks entirely.
         """
+
         self._scratch_pad_thread = thread_id
 
         LOG.info(f"🔄 [ENGINEER_DELEGATE] STARTING. Run: {run_id}")
@@ -672,56 +669,45 @@ class DelegationMixin:
         else:
             args = arguments_dict
 
-        snapshot_id = args.get("snapshot_id", "UNKNOWN_SNAPSHOT")
         batfish_tools = args.get("batfish_tools", [])
         task_context = args.get("task_context", "No context provided.")
         flag_criteria = args.get("flag_criteria", "None specified.")
+        snapshot_id = args.get("snapshot_id", "incident_001")  # Fallback
 
         # 2. Yield Initial Status
         yield self._engineer_status(
-            f"Initializing Junior Engineer for Batfish RCA...",
+            "Initializing Junior Engineer and gathering Batfish Data...",
             "in_progress",
             run_id,
         )
 
-        # 3. Create Action (DB)
-        action = None
-        try:
-            action = await asyncio.to_thread(
-                self.project_david_client.actions.create_action,
-                tool_name="delegate_engineer_task",
-                run_id=run_id,
-                tool_call_id=tool_call_id,
-                function_args=arguments_dict,
-                decision=decision,
-            )
-        except Exception as e:
-            LOG.error(f"❌ [ENGINEER_DELEGATE] Action creation failed: {e}")
-
-        # 3.5 Reject invalid delegations immediately
+        # 3. Reject invalid delegations immediately
         if not batfish_tools:
             LOG.error(
                 "❌[ENGINEER_DELEGATE] Senior delegated task with NO Batfish tools."
             )
-            error_msg = "⚠️ DELEGATION REJECTED: You assigned a task but provided an empty tool list. Provide specific Batfish RCA tools and try again."
             await self.submit_tool_output(
                 thread_id=thread_id,
                 assistant_id=assistant_id,
                 tool_call_id=tool_call_id,
-                content=error_msg,
-                action=action,
+                content="⚠️ DELEGATION REJECTED: Empty tool list. Provide specific Batfish RCA tools.",
+                action=None,
                 is_error=True,
             )
-            if action:
-                await asyncio.to_thread(
-                    self.project_david_client.actions.update_action,
-                    action_id=action.id,
-                    status=StatusEnum.failed.value,
-                )
             yield self._engineer_status(
                 "Delegation rejected: Empty tools.", "error", run_id
             )
             return
+
+        # 4. Create Action (DB)
+        action = await asyncio.to_thread(
+            self.project_david_client.actions.create_action,
+            tool_name="delegate_engineer_task",
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            function_args=arguments_dict,
+            decision=decision,
+        )
 
         ephemeral_junior = None
         execution_had_error = False
@@ -729,24 +715,58 @@ class DelegationMixin:
         ephemeral_thread = None
 
         try:
-            # 4. Setup Ephemeral Assistant & Thread
+            # Fetch User ID for Batfish scoping
+            try:
+                senior_run = await asyncio.to_thread(
+                    self.project_david_client.runs.retrieve_run, run_id=run_id
+                )
+                origin_user_id = getattr(senior_run, "user_id", None)
+            except Exception:
+                origin_user_id = None
+
+            # ==================================================================
+            # 🔥 SHORTCUT: Natively Execute the requested Batfish Tools first!
+            # ==================================================================
+            batfish_results = {}
+            for tool_name in batfish_tools:
+                yield self._engineer_status(
+                    f"Running Batfish RCA: {tool_name}...", "in_progress", run_id
+                )
+                try:
+                    res = await asyncio.to_thread(
+                        self.project_david_client.batfish.run_tool,
+                        snapshot_id=snapshot_id,
+                        tool_name=tool_name,
+                        user_id=origin_user_id,
+                    )
+                    batfish_results[tool_name] = (
+                        res if res else "✅ Tool executed: No issues found."
+                    )
+                except Exception as e:
+                    batfish_results[tool_name] = (
+                        f"Error executing {tool_name}: {str(e)}"
+                    )
+
+            # 5. Setup Ephemeral Assistant & Thread
             ephemeral_junior = await self.create_ephemeral_junior_engineer()
 
             if not self._research_worker_thread:
-                LOG.info("🧵 Creating new ephemeral thread for Junior Engineer...")
                 self._research_worker_thread = await asyncio.to_thread(
                     self.project_david_client.threads.create_thread
                 )
             ephemeral_thread = self._research_worker_thread
 
+            # We pass the pre-fetched data directly to the Junior!
             prompt = (
-                f"### NEW INCIDENT TASK DELEGATION\n\n"
-                f"**TARGET BATFISH RCA TOOLS:**\n{json.dumps(batfish_tools, indent=2)}\n\n"
+                f"### INCIDENT ANALYSIS TASK\n\n"
                 f"**TASK CONTEXT:**\n{task_context}\n\n"
                 f"**FLAG CRITERIA:**\n{flag_criteria}\n\n"
+                f"**RAW BATFISH DATA (PRE-FETCHED):**\n"
+                f"```json\n{json.dumps(batfish_results, indent=2)}\n```\n\n"
                 f"**CRITICAL INSTRUCTION:**\n"
-                f"You MUST immediately call the `run_batfish_tool` tool for the RCA tools listed above. "
-                f"Do NOT output conversational text first. Invoke the tool immediately."
+                f"Analyze the JSON output above against the flag criteria.\n"
+                f"You MUST use the `append_scratchpad` tool to log the ✅ [RAW DATA] and any 🚩[FLAG]s.\n"
+                f"Then, reply with a synthesized summary containing explicit Evidence SNIPS from the JSON."
             )
 
             msg = await self.create_ephemeral_message(
@@ -757,13 +777,12 @@ class DelegationMixin:
             )
 
             yield self._engineer_status(
-                "Junior Engineer active. Streaming...", "in_progress", run_id
+                "Junior Engineer synthesizing results...", "in_progress", run_id
             )
 
-            LOG.info(f"🔄[SENIOR_THREAD_ID]: {thread_id}")
-            LOG.info(f"🔄[JUNIOR_THREAD_ID]: {ephemeral_thread.id}")
-
-            # 5. Configure Stream (Turn 1)
+            # ==================================================================
+            # 6. STREAM JUNIOR
+            # ==================================================================
             sync_stream = self.project_david_client.synchronous_inference_stream
             sync_stream.setup(
                 thread_id=ephemeral_thread.id,
@@ -773,14 +792,8 @@ class DelegationMixin:
                 api_key=self._delegation_api_key,
             )
 
-            LOG.critical("🎬 JUNIOR ENGINEER STREAM STARTING — TURN 1")
-
-            tool_completed = False
-
-            # 6. Stream Turn 1
             async for event in self._stream_sync_generator(
-                sync_stream.stream_events,
-                model=self._delegation_model,
+                sync_stream.stream_events, model=self._delegation_model
             ):
                 if (
                     hasattr(event, "tool")
@@ -789,44 +802,17 @@ class DelegationMixin:
                 ):
                     continue
 
-                # ✅ INTERCEPT: Server-Side Nested Tool Execution
                 if isinstance(event, ToolCallRequestEvent):
-                    if event.tool_name == "run_batfish_tool":
-                        named_tool = event.args.get("batfish_tool_name")
-                        LOG.info(
-                            f"🔧[ENGINEER_DELEGATE] Executing Batfish Tool server-side: {named_tool}"
-                        )
-
-                        yield self._engineer_status(
-                            f"Running Batfish analysis: {named_tool}...",
-                            "in_progress",
-                            run_id,
-                        )
-
-                        try:
-                            # Programmatically inject the snapshot_id the Junior doesn't know about
-                            res = await asyncio.to_thread(
-                                self.project_david_client.batfish.run_tool,
-                                snapshot_id=snapshot_id,
-                                tool_name=named_tool,
-                            )
-                            tool_output = (
-                                json.dumps(res, indent=2) if res else "No issues found."
-                            )
-                        except Exception as exc:
-                            LOG.error(f"❌ Batfish Tool Error: {exc}")
-                            tool_output = f"Error running tool {named_tool}: {str(exc)}"
-
-                        # Submit the result straight back to the Junior's ephemeral thread
-                        await self.submit_tool_output(
+                    if event.tool_name == "append_scratchpad":
+                        async for chunk in self.handle_append_scratchpad(
                             thread_id=ephemeral_thread.id,
+                            run_id=ephemeral_run.id,
                             assistant_id=ephemeral_junior.id,
+                            arguments_dict=event.args,
                             tool_call_id=event.tool_call_id,
-                            content=tool_output,
-                            action=None,
-                            is_error=False,
-                        )
-                        tool_completed = True
+                            decision=decision,
+                        ):
+                            yield chunk
                     continue
 
                 if getattr(event, "tool_calls", None) or getattr(
@@ -863,118 +849,38 @@ class DelegationMixin:
                         }
                     )
 
-            # ------------------------------------------------------------------
-            # 6.5 SECOND TURN
-            # ------------------------------------------------------------------
-            if tool_completed:
-                yield self._engineer_status(
-                    "Batfish output received. Junior Engineer synthesising results...",
-                    "in_progress",
-                    run_id,
-                )
+            yield self._engineer_status(
+                "Junior processing. Waiting for completion...", "in_progress", run_id
+            )
 
-                analysis_prompt = (
-                    f"The Batfish tools have been successfully executed. "
-                    f"The RCA JSON output has been returned as a tool result in your context.\n\n"
-                    f"**MANDATORY INSTRUCTIONS:**\n"
-                    f"1. You MUST evaluate the output against the flag criteria: {flag_criteria}\n"
-                    f"2. You MUST use the `append_scratchpad` tool to log the ✅ [RAW DATA] and any 🚩[FLAG]s.\n"
-                    f"3. You MUST reply with a synthesized summary containing explicit Evidence SNIPS from the JSON.\n"
-                    f"Do NOT output just a newline. Hallucination will not be tolerated."
-                )
-
-                analysis_msg = await self.create_ephemeral_message(
-                    ephemeral_thread.id, analysis_prompt, ephemeral_junior.id
-                )
-
-                ephemeral_run = await self.create_ephemeral_run(
-                    ephemeral_junior.id, ephemeral_thread.id
-                )
-
-                LOG.critical("🎬 JUNIOR ENGINEER STREAM STARTING — TURN 2")
-
-                sync_stream.setup(
-                    thread_id=ephemeral_thread.id,
-                    assistant_id=ephemeral_junior.id,
-                    message_id=analysis_msg.id,
+            # ==================================================================
+            # 7. UNCOMMENTED WAIT BLOCK (Critical!)
+            # ==================================================================
+            try:
+                final_run_status = await self._wait_for_run_completion(
                     run_id=ephemeral_run.id,
-                    api_key=self._delegation_api_key,
+                    thread_id=ephemeral_thread.id,
                 )
-
-                async for event in self._stream_sync_generator(
-                    sync_stream.stream_events,
-                    model=self._delegation_model,
-                ):
-                    if (
-                        hasattr(event, "tool")
-                        or hasattr(event, "status")
-                        or getattr(event, "type", "") == "status"
-                    ):
-                        continue
-
-                    if getattr(event, "tool_calls", None) or getattr(
-                        event, "function_call", None
-                    ):
-                        continue
-
-                    chunk_content = getattr(event, "content", None) or getattr(
-                        event, "text", None
-                    )
-                    chunk_reasoning = getattr(event, "reasoning", None)
-
-                    if chunk_reasoning:
-                        yield json.dumps(
-                            {
-                                "stream_type": "delegation",
-                                "chunk": {
-                                    "type": "reasoning",
-                                    "content": chunk_reasoning,
-                                    "run_id": run_id,
-                                },
-                            }
-                        )
-
-                    if chunk_content and isinstance(chunk_content, str):
-                        yield json.dumps(
-                            {
-                                "stream_type": "delegation",
-                                "chunk": {
-                                    "type": "content",
-                                    "content": chunk_content,
-                                    "run_id": run_id,
-                                },
-                            }
-                        )
-
-            else:
+                LOG.info(
+                    "✅ [ENGINEER_DELEGATE] Junior run completed. Status=%s",
+                    final_run_status,
+                )
+            except asyncio.TimeoutError:
                 LOG.error(
-                    "❌ [ENGINEER_DELEGATE] Junior never triggered a Batfish tool."
+                    "⏳[ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway."
                 )
                 execution_had_error = True
 
-            # 7. Fetch final report
-            # NOTE: Run lifecycle is managed platform-side. No polling required.
+            # 8. Fetch final report
             final_content = await self._fetch_worker_final_report(
                 thread_id=ephemeral_thread.id
             )
 
-            LOG.critical("██████[FINAL_CONTENT_BY_JUNIOR]=%s ██████", final_content)
-
             if not final_content:
-                if tool_completed:
-                    LOG.info(
-                        "⚠️ [ENGINEER_DELEGATE] Junior output no text in Turn 2, synthesizing success."
-                    )
-                    final_content = "✅ Batfish analysis successfully executed. See supplementary scratchpad."
-                    execution_had_error = False
-                else:
-                    LOG.critical(
-                        "██████[ENGINEER_DELEGATE_TOTAL_FAILURE] Junior completely failed. ██████"
-                    )
-                    final_content = "⚠️ JUNIOR FORMATTING ERROR: The Junior Engineer failed to invoke the Batfish tool."
-                    execution_had_error = True
+                final_content = "⚠️ Junior Engineer failed to produce a report."
+                execution_had_error = True
 
-            # 8. Submit output
+            # 9. Submit output back to Senior
             await self.submit_tool_output(
                 thread_id=thread_id,
                 assistant_id=assistant_id,
