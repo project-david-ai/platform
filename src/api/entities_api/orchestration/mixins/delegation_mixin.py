@@ -602,7 +602,6 @@ class DelegationMixin:
             msg = await self.create_ephemeral_message(
                 ephemeral_thread.id, prompt, ephemeral_junior.id
             )
-
             # ------------------------------------------------------------------
             # STAMP THE SENIOR's user_id INTO THE JUNIOR's RUN METADATA
             # The Junior's fresh server-side worker instance has no other way

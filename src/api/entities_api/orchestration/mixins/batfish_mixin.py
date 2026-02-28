@@ -15,7 +15,7 @@ from src.api.entities_api.services.batfish_service import (BatfishService,
 
 LOG = LoggingUtility()
 
-_DEFAULT_SNAPSHOT_ID = "snap_774bc864d2ef4e71abb6"
+_DEFAULT_SNAPSHOT_ID = "snap_04d99a4ca9f543fe93b7"
 
 
 def _batfish_status(
