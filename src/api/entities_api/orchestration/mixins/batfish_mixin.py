@@ -32,9 +32,7 @@ class BatfishMixin:
     """
 
     @staticmethod
-    def _format_batfish_error(
-        tool_name: str, error_content: str, inputs: Dict[str, Any]
-    ) -> str:
+    def _format_batfish_error(tool_name: str, error_content: str, inputs: Dict[str, Any]) -> str:
         if not error_content:
             error_content = "Unknown Error (Empty Response)"
 
@@ -79,7 +77,7 @@ class BatfishMixin:
         arguments_dict: Dict[str, Any],
         tool_call_id: Optional[str],
         decision: Optional[Dict],
-        user_id: Optional[str] = None,  # <-- PROPAGATED
+        user_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         ts_start = asyncio.get_event_loop().time()
 
@@ -127,30 +125,26 @@ class BatfishMixin:
             snapshot_id = arguments_dict.get("snapshot_id") or _DEFAULT_SNAPSHOT_ID
 
             if not arguments_dict.get("snapshot_id"):
-                LOG.info(
-                    f"BATFISH ▸ snapshot_id omitted — fallback: {_DEFAULT_SNAPSHOT_ID}"
-                )
+                LOG.info(f"BATFISH ▸ snapshot_id omitted — fallback: {_DEFAULT_SNAPSHOT_ID}")
 
             if tool_name == "refresh_snapshot":
-                yield _status(
-                    run_id, tool_name, "Ingesting configs and loading snapshot..."
-                )
+                yield _status(run_id, tool_name, "Ingesting configs and loading snapshot...")
+                # FIX: pass snapshot_id (not snapshot_name) — client routes to
+                # POST /v1/batfish/snapshots/{snapshot_id}/refresh
                 record = await asyncio.to_thread(
                     self.project_david_client.batfish.refresh_snapshot,
-                    snapshot_name=arguments_dict.get("snapshot_name"),
+                    snapshot_id=snapshot_id,
                     configs_root=arguments_dict.get("configs_root"),
-                    user_id=user_id,  # <-- PLUMBED
+                    user_id=user_id,
                 )
                 res = record.model_dump() if record else None
 
             elif tool_name == "get_snapshot":
-                yield _status(
-                    run_id, tool_name, f"Retrieving snapshot '{snapshot_id}'..."
-                )
+                yield _status(run_id, tool_name, f"Retrieving snapshot '{snapshot_id}'...")
                 record = await asyncio.to_thread(
                     self.project_david_client.batfish.get_snapshot,
                     snapshot_id=snapshot_id,
-                    user_id=user_id,  # <-- PLUMBED
+                    user_id=user_id,
                 )
                 res = record.model_dump() if record else None
 
@@ -158,31 +152,27 @@ class BatfishMixin:
                 yield _status(run_id, tool_name, "Listing snapshots...")
                 records = await asyncio.to_thread(
                     self.project_david_client.batfish.list_snapshots,
-                    user_id=user_id,  # <-- PLUMBED
+                    user_id=user_id,
                 )
                 res = [r.model_dump() for r in records] if records else []
 
             elif tool_name == "delete_snapshot":
-                yield _status(
-                    run_id, tool_name, f"Deleting snapshot '{snapshot_id}'..."
-                )
+                yield _status(run_id, tool_name, f"Deleting snapshot '{snapshot_id}'...")
                 success = await asyncio.to_thread(
                     self.project_david_client.batfish.delete_snapshot,
                     snapshot_id=snapshot_id,
-                    user_id=user_id,  # <-- PLUMBED
+                    user_id=user_id,
                 )
                 res = {"deleted": success, "snapshot_id": snapshot_id}
 
             elif tool_name == "run_batfish_tool":
                 named_tool = arguments_dict["batfish_tool_name"]
-                yield _status(
-                    run_id, tool_name, f"Running RCA analysis: {named_tool}..."
-                )
+                yield _status(run_id, tool_name, f"Running RCA analysis: {named_tool}...")
                 res = await asyncio.to_thread(
                     self.project_david_client.batfish.run_tool,
                     snapshot_id=snapshot_id,
                     tool_name=named_tool,
-                    user_id=user_id,  # <-- PLUMBED
+                    user_id=user_id,
                 )
 
             elif tool_name == "run_all_batfish_tools":
@@ -190,7 +180,7 @@ class BatfishMixin:
                 res = await asyncio.to_thread(
                     self.project_david_client.batfish.run_all_tools,
                     snapshot_id=snapshot_id,
-                    user_id=user_id,  # <-- PLUMBED
+                    user_id=user_id,
                 )
             else:
                 raise ValueError(f"Unknown Batfish tool: {tool_name}")
@@ -201,9 +191,7 @@ class BatfishMixin:
                 yield _status(run_id, tool_name, "Analysis complete.", status="success")
                 is_error = False
             else:
-                final_content = (
-                    "No configuration issues or results found during Batfish execution."
-                )
+                final_content = "No configuration issues or results found during Batfish execution."
                 yield _status(
                     run_id,
                     tool_name,
@@ -216,11 +204,7 @@ class BatfishMixin:
             await asyncio.to_thread(
                 self.project_david_client.actions.update_action,
                 action_id=action.id,
-                status=(
-                    StatusEnum.completed.value
-                    if not is_error
-                    else StatusEnum.failed.value
-                ),
+                status=(StatusEnum.completed.value if not is_error else StatusEnum.failed.value),
             )
             await self.submit_tool_output(
                 thread_id=thread_id,
@@ -240,9 +224,7 @@ class BatfishMixin:
 
         except Exception as exc:
             LOG.error(f"[{run_id}] {tool_name} HARD FAILURE: {exc}", exc_info=True)
-            yield _status(
-                run_id, tool_name, f"Critical failure: {str(exc)}", status="error"
-            )
+            yield _status(run_id, tool_name, f"Critical failure: {str(exc)}", status="error")
             await asyncio.to_thread(
                 self.project_david_client.actions.update_action,
                 action_id=action.id,
@@ -271,9 +253,12 @@ class BatfishMixin:
         decision: Optional[Dict] = None,
         user_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
+        # FIX: schema now requires snapshot_id (not snapshot_name) to match
+        # BatfishClient.refresh_snapshot(snapshot_id, ...) and the router
+        # POST /v1/batfish/snapshots/{snapshot_id}/refresh
         async for event in self._execute_batfish_tool_logic(
             "refresh_snapshot",
-            {"snapshot_name": str},
+            {"snapshot_id": str},
             thread_id,
             run_id,
             assistant_id,
