@@ -568,36 +568,17 @@ class DelegationMixin:
             # ------------------------------------------------------------------
             origin_user_id = getattr(self, "_batfish_owner_user_id", None)
 
-            if not origin_user_id:
-                try:
-                    from projectdavid import Entity
+            run_obj = await asyncio.to_thread(
+                self.project_david_client.runs.retrieve_run, run_id=run_id
+            )
+            origin_user_id = run_obj.user_id
+            self._batfish_owner_user_id = origin_user_id
 
-                    admin_client = Entity(api_key=os.environ.get("ADMIN_API_KEY"))
-                    run_obj = await asyncio.to_thread(
-                        admin_client.runs.retrieve_run, run_id=run_id
-                    )
-                    origin_user_id = run_obj.user_id
-                    self._batfish_owner_user_id = origin_user_id
-                    LOG.info(
-                        "ENGINEER_DELEGATE ▸ Resolved batfish_owner_user_id from Senior run: %s",
-                        origin_user_id,
-                    )
-                except Exception as e:
-                    LOG.warning(
-                        "ENGINEER_DELEGATE ▸ Could not resolve run_user_id: %s", e
-                    )
-
-            if not origin_user_id:
-                origin_user_id = os.getenv("ENTITIES_USER_ID")
-                LOG.warning(
-                    "ENGINEER_DELEGATE ▸ Falling back to ENTITIES_USER_ID: %s",
-                    origin_user_id,
-                )
-
-            LOG.info("ENGINEER_DELEGATE ▸ batfish_owner_user_id=%s", origin_user_id)
-
+            LOG.info(
+                "ENGINEER_DELEGATE ▸ Resolved batfish_owner_user_id from Senior run: %s",
+                origin_user_id,
+            )
             ephemeral_junior = await self.create_ephemeral_junior_engineer()
-
             # ------------------------------------------------------------------
             # FRESH THREAD PER INVOCATION — never reuse stale state
             # ------------------------------------------------------------------
