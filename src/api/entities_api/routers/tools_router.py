@@ -1,4 +1,6 @@
 # src/api/entities_api/routers/tools_router.py
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -10,16 +12,19 @@ from src.api.entities_api.dependencies import (get_api_key, get_db,
                                                get_web_reader)
 from src.api.entities_api.models.models import ApiKey as ApiKeyModel
 from src.api.entities_api.models.models import User as UserModel
+from src.api.entities_api.orchestration.mixins.web_search_mixin import \
+    SearxNGClient
 from src.api.entities_api.services.logging_service import LoggingUtility
 from src.api.entities_api.services.web_reader import UniversalWebReader
 
 # --- Router Setup ---
-# We group these under "Tools"
 router = APIRouter()
 logging_utility = LoggingUtility()
 
 
 # --- Request Models ---
+
+
 class WebReadRequest(BaseModel):
     url: str
     force_refresh: bool = False
@@ -30,10 +35,15 @@ class WebScrollRequest(BaseModel):
     page: int
 
 
-# ✅ ADDED: The missing Pydantic model for search
 class WebSearchRequest(BaseModel):
     url: str
     query: str
+
+
+class SerpSearchRequest(BaseModel):
+    query: str
+    count: int = 10
+    engines: Optional[List[str]] = None
 
 
 class ScratchpadReadRequest(BaseModel):
@@ -50,7 +60,9 @@ class ScratchpadAppendRequest(BaseModel):
     note: str
 
 
-# --- Helper for Code Reuse (Optional, but keeps routes clean) ---
+# --- Helper ---
+
+
 def verify_admin_privileges(db: Session, auth_key: ApiKeyModel) -> UserModel:
     """
     Helper to enforce Admin-only access, mimicking the logic in users_router.
@@ -69,30 +81,29 @@ def verify_admin_privileges(db: Session, auth_key: ApiKeyModel) -> UserModel:
     return requesting_admin
 
 
-# --- Routes ---
+# -----------------------------------------------------------------------------
+# WEB TOOL ROUTES
+# -----------------------------------------------------------------------------
 
 
 @router.post("/tools/web/read", summary="Read a URL (Page 0)")
 async def read_url(
     payload: WebReadRequest,
     reader: UniversalWebReader = Depends(get_web_reader),
-    db: Session = Depends(get_db),  # Needed for Admin Check
-    auth_key: ApiKeyModel = Depends(get_api_key),  # Needed for Identity
+    db: Session = Depends(get_db),
+    auth_key: ApiKeyModel = Depends(get_api_key),
 ):
     """
-    **Agent Action:** Read a new URL.
+    **Agent Action:** Read a new URL via browserless.
     **Security:** Admin Only.
     """
-    # 1. Admin Security Check
     admin_user = verify_admin_privileges(db, auth_key)
 
     logging_utility.info(
         f"Admin '{admin_user.email}' requesting to read URL: {payload.url}"
     )
 
-    # 2. Execute Logic
     try:
-        # Pass the force_refresh flag to the service
         result = await reader.read(payload.url, force_refresh=payload.force_refresh)
         return {"content": result}
     except Exception as e:
@@ -104,21 +115,19 @@ async def read_url(
 async def scroll_url(
     payload: WebScrollRequest,
     reader: UniversalWebReader = Depends(get_web_reader),
-    db: Session = Depends(get_db),  # Needed for Admin Check
-    auth_key: ApiKeyModel = Depends(get_api_key),  # Needed for Identity
+    db: Session = Depends(get_db),
+    auth_key: ApiKeyModel = Depends(get_api_key),
 ):
     """
-    **Agent Action:** Scroll an existing URL.
+    **Agent Action:** Scroll an existing cached URL to the next page chunk.
     **Security:** Admin Only.
     """
-    # 1. Admin Security Check
     admin_user = verify_admin_privileges(db, auth_key)
 
     logging_utility.info(
         f"Admin '{admin_user.email}' requesting scroll on URL: {payload.url} (Page {payload.page})"
     )
 
-    # 2. Execute Logic
     try:
         result = await reader.scroll(payload.url, payload.page)
         return {"content": result}
@@ -135,10 +144,11 @@ async def search_url(
     auth_key: ApiKeyModel = Depends(get_api_key),
 ):
     """
-    **Agent Action:** Search for a specific term across ALL pages of a URL.
+    **Agent Action:** Search for a specific term across ALL cached pages of a URL.
     **Benefit:** Saves context window by not reading every page manually.
+    **Security:** Admin Only.
     """
-    verify_admin_privileges(db, auth_key)  # Same auth as before
+    verify_admin_privileges(db, auth_key)
 
     try:
         result = await reader.search(payload.url, payload.query)
@@ -147,8 +157,50 @@ async def search_url(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/tools/web/serp", summary="Structured SERP search via SearxNG")
+async def serp_search(
+    payload: SerpSearchRequest,
+    db: Session = Depends(get_db),
+    auth_key: ApiKeyModel = Depends(get_api_key),
+):
+    """
+    **Agent Action:** Perform a web discovery search via the internal SearxNG container.
+
+    - Hits SearxNG **directly** over internal HTTP — no browserless, no SDK round-trip.
+    - SearxNG fans out to DuckDuckGo, Bing, Google simultaneously.
+    - Returns deduplicated results ranked by score.
+    - Optionally pin specific engines via the `engines` field.
+
+    **Examples:**
+    ```json
+    { "query": "bgp route reflector design", "count": 10 }
+    { "query": "python async patterns", "count": 5, "engines": ["duckduckgo", "bing"] }
+    ```
+
+    **Security:** Admin Only.
+    """
+    admin_user = verify_admin_privileges(db, auth_key)
+
+    logging_utility.info(
+        f"Admin '{admin_user.email}' SERP search: '{payload.query}' "
+        f"engines={payload.engines or 'default'} count={payload.count}"
+    )
+
+    try:
+        searxng = SearxNGClient()
+        result = await searxng.format_for_agent(
+            query=payload.query,
+            count=payload.count,
+            engines=payload.engines,
+        )
+        return {"content": result}
+    except Exception as e:
+        logging_utility.error(f"SERP search failed for '{payload.query}': {str(e)}")
+        raise HTTPException(status_code=500, detail=f"SERP search failed: {str(e)}")
+
+
 # -----------------------------------------------------------------------------
-# SCRATCHPAD TOOL ROUTES (New)
+# SCRATCHPAD TOOL ROUTES
 # -----------------------------------------------------------------------------
 
 

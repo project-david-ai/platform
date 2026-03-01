@@ -1,0 +1,39 @@
+use_default_settings: true
+
+
+server:
+  secret_key: "BEMQzzKgCuYr5Q_h09Y_lw85MNv5pg4BSYITui4PzuQ"
+  bind_address: "0.0.0.0"
+  port: 8080
+  base_url: "http://searxng:8080/"
+  image_proxy: false
+
+ui:
+  default_theme: simple
+  default_locale: en
+
+search:
+  safe_search: 0
+  default_lang: "en"
+  formats:
+    - html
+    - json        # ← this is off by default, must explicitly enable
+
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    enabled: true
+
+  - name: bing
+    engine: bing
+    shortcut: bi
+    enabled: true
+
+  - name: google
+    engine: google
+    shortcut: go
+    enabled: true
+
+redis:
+  url: redis://redis:6379/1   # DB 1 to avoid collision with your app on DB 0

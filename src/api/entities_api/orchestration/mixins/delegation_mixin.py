@@ -128,7 +128,6 @@ class DelegationMixin:
     # ------------------------------------------------------------------
     # HELPER: Lifecycle cleanup
     # ------------------------------------------------------------------
-
     async def _ephemeral_clean_up(
         self, assistant_id: str, thread_id: Optional[str], delete_thread: bool = False
     ):
@@ -180,7 +179,6 @@ class DelegationMixin:
     # ------------------------------------------------------------------
     # EPHEMERAL FACTORIES
     # ------------------------------------------------------------------
-
     async def create_ephemeral_worker_assistant(self):
         manager = AssistantManager()
         return await manager.create_ephemeral_worker_assistant()
@@ -246,7 +244,6 @@ class DelegationMixin:
     # HANDLER 1: Research Delegation — RESTORED working structure
     # Additions: origin_user_id resolution + metadata stamp on ephemeral run
     # ------------------------------------------------------------------
-
     async def handle_delegate_research_task(
         self, thread_id, run_id, assistant_id, arguments_dict, tool_call_id, decision
     ) -> AsyncGenerator[str, None]:

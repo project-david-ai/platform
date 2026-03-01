@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from collections import defaultdict
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
+import httpx
 from projectdavid_common import ToolValidator
 from projectdavid_common.utilities.logging_service import LoggingUtility
 from projectdavid_common.validation import StatusEnum
@@ -18,6 +20,10 @@ LOG = LoggingUtility()
 # instruction instead of executing, forcing the worker to pivot.
 SCROLL_LIMIT_PER_URL = 3
 
+# Internal SearxNG container URL — direct, no SDK round-trip needed.
+SEARXNG_BASE_URL = os.getenv("SEARXNG_URL", "http://searxng:8080")
+SEARXNG_TIMEOUT = int(os.getenv("SEARXNG_TIMEOUT", "15"))
+
 
 def _status(run_id: str, tool: str, message: str, status: str = "running") -> str:
     """
@@ -25,7 +31,7 @@ def _status(run_id: str, tool: str, message: str, status: str = "running") -> st
 
     Shape:
         {
-            "type":    "status",
+            "type":    "web_status",
             "run_id":  "<uuid>",
             "tool":    "<tool_name>",
             "status":  "running" | "success" | "error" | "warning",
@@ -45,9 +51,170 @@ def _status(run_id: str, tool: str, message: str, status: str = "running") -> st
     )
 
 
+# ---------------------------------------------------------------------------
+# SearxNG Direct Client
+# ---------------------------------------------------------------------------
+
+
+class SearxNGResult:
+    """Lightweight wrapper around a single SearxNG result object."""
+
+    def __init__(self, data: Dict[str, Any]):
+        self.title: str = data.get("title", "No Title")
+        self.url: str = data.get("url", "")
+        self.snippet: str = data.get("content", "")
+        self.engine: str = data.get("engine", "unknown")
+        self.score: float = data.get("score", 0.0)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<SearxNGResult title={self.title!r} url={self.url!r}>"
+
+
+class SearxNGClient:
+    """
+    Thin async HTTP client for the internal SearxNG container.
+
+    Calls http://searxng:8080 directly — no SDK round-trip, no browser
+    overhead.  The browserless container is reserved for page *reading*,
+    not discovery.
+    """
+
+    def __init__(
+        self,
+        base_url: str = SEARXNG_BASE_URL,
+        timeout: int = SEARXNG_TIMEOUT,
+    ):
+        self.base_url = base_url
+        self.timeout = timeout
+
+    async def search(
+        self,
+        query: str,
+        count: int = 10,
+        engines: Optional[List[str]] = None,
+        categories: str = "general",
+        language: str = "en",
+    ) -> List[SearxNGResult]:
+        """
+        Execute a search and return a sorted list of SearxNGResult objects.
+
+        Args:
+            query:      The search query string.
+            count:      Maximum results to return (applied client-side).
+            engines:    Optional explicit engine list e.g. ['duckduckgo', 'bing'].
+                        None → SearxNG uses its configured defaults.
+            categories: SearxNG category — 'general', 'news', 'it', etc.
+            language:   BCP-47 language code for results.
+
+        Raises:
+            RuntimeError: On HTTP error or connection failure.
+        """
+        params: Dict[str, Any] = {
+            "q": query,
+            "format": "json",
+            "categories": categories,
+            "language": language,
+        }
+        if engines:
+            params["engines"] = ",".join(engines)
+
+        LOG.info(f"🔎 SearxNG query: '{query}' | engines={engines or 'default'}")
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(f"{self.base_url}/search", params=params)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPStatusError as exc:
+            LOG.error(f"SearxNG HTTP error: {exc}")
+            raise RuntimeError(f"SearxNG returned {exc.response.status_code}")
+        except httpx.RequestError as exc:
+            LOG.error(f"SearxNG connection error: {exc}")
+            raise RuntimeError(f"Could not reach SearxNG at {self.base_url}: {exc}")
+
+        raw = data.get("results", [])
+        results = sorted(
+            [SearxNGResult(r) for r in raw],
+            key=lambda r: r.score,
+            reverse=True,
+        )
+        LOG.info(f"✅ SearxNG returned {len(results)} results for '{query}'")
+        return results[:count]
+
+    async def format_for_agent(
+        self,
+        query: str,
+        count: int = 10,
+        engines: Optional[List[str]] = None,
+        query_tier: int = 1,
+    ) -> str:
+        """
+        Search and return a structured, agent-ready string with tier-aware
+        guidance.  Drop-in replacement for the old DDG markdown scrape output.
+
+        Args:
+            query:       Search query.
+            count:       Max results.
+            engines:     Optional engine override list.
+            query_tier:  Tier (1/2/3) from _classify_query_tier — controls
+                         the mandatory source count in the agent instructions.
+        """
+        try:
+            results = await self.search(query=query, count=count, engines=engines)
+        except RuntimeError as exc:
+            return f"❌ SearxNG search failed: {exc}"
+
+        if not results:
+            return (
+                f"❌ No results found for '{query}'. "
+                "Try a broader query or different keywords."
+            )
+
+        min_sources = {1: 2, 2: 3, 3: 5}.get(query_tier, 2)
+
+        lines: List[str] = [
+            f"🔍 SEARCH RESULTS for '{query}' "
+            f"({len(results)} found | Tier {query_tier} → requires {min_sources} sources):\n"
+        ]
+
+        for i, r in enumerate(results, 1):
+            authority_tag = ""
+            if any(d in r.url for d in [".gov", ".edu", ".org"]):
+                authority_tag = " [HIGH AUTHORITY]"
+            elif "wikipedia.org" in r.url:
+                authority_tag = " [ENCYCLOPEDIA]"
+
+            lines.append(
+                f"{i}. **{r.title}**{authority_tag}  [via {r.engine}]\n"
+                f"   URL: {r.url}\n"
+                f"   {r.snippet}\n"
+            )
+
+        lines.append(
+            f"\n⚠️ MANDATORY NEXT ACTION:\n"
+            f"You MUST call read_web_page on at least {min_sources} of the URLs above.\n"
+            f"Current progress: 0/{min_sources} sources read.\n"
+            f"SERP snippets alone are NOT sufficient — always read the source pages.\n"
+            f"Recommended: start with the top {min(min_sources + 1, len(results))} results."
+        )
+
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Mixin
+# ---------------------------------------------------------------------------
+
+
 class WebSearchMixin:
     """
     Drive the **Level 3 Agentic Web Tools** (read, scroll, search, discovery).
+
+    Tool routing:
+      - perform_web_search  → SearxNG (direct HTTP, internal container)
+      - read_web_page       → SDK → FastAPI → browserless (unchanged)
+      - scroll_web_page     → SDK → FastAPI → browserless (unchanged)
+      - search_web_page     → SDK → FastAPI → Redis cache  (unchanged)
 
     Features:
     - Lazy-loaded session state (crash-proof).
@@ -66,6 +233,7 @@ class WebSearchMixin:
     # ------------------------------------------------------------------
     # 1. BULLETPROOF STATE MANAGEMENT (Lazy Load)
     # ------------------------------------------------------------------
+
     @property
     def _research_sessions(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -100,9 +268,9 @@ class WebSearchMixin:
         Classifies query complexity to determine required source count.
 
         Returns:
-            1: Simple factual query (2 sources)
-            2: Moderate multi-faceted query (3-4 sources)
-            3: Complex analytical query (5-6 sources)
+            1: Simple factual query       (requires 2 sources)
+            2: Moderate multi-faceted     (requires 3 sources)
+            3: Complex analytical query   (requires 5 sources)
         """
         query_lower = query.lower()
 
@@ -118,7 +286,7 @@ class WebSearchMixin:
             "how do",
             "what are the effects",
         ]
-        if any(keyword in query_lower for keyword in tier_3_keywords):
+        if any(kw in query_lower for kw in tier_3_keywords):
             return 3
 
         tier_2_keywords = [
@@ -132,7 +300,7 @@ class WebSearchMixin:
             "methods",
             "ways to",
         ]
-        if any(keyword in query_lower for keyword in tier_2_keywords):
+        if any(kw in query_lower for kw in tier_2_keywords):
             return 2
 
         return 1
@@ -186,7 +354,7 @@ class WebSearchMixin:
 
         return True, f"Research complete: {sources_read}/{required} sources read."
 
-    def _clear_session(self, run_id: str):
+    def _clear_session(self, run_id: str) -> None:
         """Clear research session after completion."""
         if run_id in self._research_sessions:
             del self._research_sessions[run_id]
@@ -194,6 +362,7 @@ class WebSearchMixin:
     # ------------------------------------------------------------------
     # SCROLL GUARD
     # ------------------------------------------------------------------
+
     def _check_scroll_allowed(
         self, run_id: str, target_url: str, page_num: int
     ) -> Optional[str]:
@@ -294,60 +463,6 @@ class WebSearchMixin:
             f"3. [SCROLL] 'scroll_web_page' to page {next_p}."
         )
 
-    def _parse_serp_results(self, raw_markdown: str, query: str, run_id: str) -> str:
-        """Enhanced SERP parsing with quality hints and progress tracking."""
-        if not raw_markdown:
-            return f"Error: No data for '{query}'."
-
-        session = self._get_or_create_session(run_id, query)
-        session["search_performed"] = True
-
-        lines = raw_markdown.split("\n")
-        results = []
-        count = 0
-
-        for line in lines:
-            if count >= 10:
-                break
-            if "](" in line and "duckduckgo" not in line:
-                match = re.search(r"\((https?://[^)]+)\)", line)
-                if match:
-                    title = line.split("](")[0].strip("[")
-                    url = match.group(1)
-
-                    quality_hint = ""
-                    if any(domain in url for domain in [".gov", ".edu", ".org"]):
-                        quality_hint = " [HIGH AUTHORITY]"
-                    elif "wikipedia.org" in url:
-                        quality_hint = " [ENCYCLOPEDIA]"
-
-                    results.append(
-                        f"{count+1}. **{title}**{quality_hint}\n   URL: {url}"
-                    )
-                    count += 1
-
-        if not results:
-            return "No results found."
-
-        query_tier = session["query_tier"]
-        min_sources = {1: 2, 2: 3, 3: 5}.get(query_tier, 3)
-
-        output = (
-            f"🔍 SEARCH RESULTS for '{query}' ({count} found):\n"
-            f"📊 Query Classification: Tier {query_tier} (Requires {min_sources} sources)\n\n"
-            + "\n".join(results)
-        )
-
-        output += (
-            f"\n\n⚠️ MANDATORY NEXT ACTION:\n"
-            f"You MUST call read_web_page on at least {min_sources} results above.\n"
-            f"Current progress: 0/{min_sources} sources read.\n"
-            f"SERP snippets alone are NOT sufficient for answering this query.\n"
-            f"Recommended: Read top {min(min_sources + 1, count)} URLs to ensure quality."
-        )
-
-        return output
-
     # ------------------------------------------------------------------
     # 3. CORE EXECUTION LOGIC (The Engine)
     # ------------------------------------------------------------------
@@ -366,8 +481,13 @@ class WebSearchMixin:
         """
         Shared core logic for Read, Scroll, Search, and SERP with progress tracking.
 
+        Routing:
+          perform_web_search  → SearxNGClient  (direct internal HTTP)
+          read_web_page       → SDK client     (FastAPI → browserless)
+          scroll_web_page     → SDK client     (FastAPI → browserless)
+          search_web_page     → SDK client     (FastAPI → Redis cache)
+
         Yields raw JSON strings conforming to the stream EVENT_CONTRACT.
-        The SDK deserializes and routes — no StatusEvent dataclasses here.
         """
         ts_start = asyncio.get_event_loop().time()
 
@@ -409,8 +529,8 @@ class WebSearchMixin:
                     action_id=action.id,
                     status=StatusEnum.failed.value,
                 )
-            except Exception as e:
-                LOG.error(f"Failed to submit validation error: {e}")
+            except Exception as exc:
+                LOG.error(f"Failed to submit validation error: {exc}")
 
             return
 
@@ -426,8 +546,8 @@ class WebSearchMixin:
                 function_args=arguments_dict,
                 decision=decision,
             )
-        except Exception as e:
-            LOG.error(f"{tool_name} ▸ Action creation failed: {e}")
+        except Exception as exc:
+            LOG.error(f"{tool_name} ▸ Action creation failed: {exc}")
             yield _status(run_id, tool_name, "Internal system error.", status="error")
             return
 
@@ -435,6 +555,9 @@ class WebSearchMixin:
         try:
             final_content = ""
 
+            # ----------------------------------------------------------------
+            # read_web_page — SDK → FastAPI → browserless
+            # ----------------------------------------------------------------
             if tool_name == "read_web_page":
                 target_url = arguments_dict["url"]
                 yield _status(run_id, tool_name, f"Reading: {target_url}...")
@@ -457,8 +580,8 @@ class WebSearchMixin:
                 tier = session.get("query_tier", 1)
                 min_sources = {1: 2, 2: 3, 3: 5}.get(tier, 2)
                 progress_note = (
-                    f"\n\n📊 RESEARCH PROGRESS: {session['sources_read']}/{min_sources} sources read "
-                    f"(Tier {tier} query)\n"
+                    f"\n\n📊 RESEARCH PROGRESS: {session['sources_read']}/{min_sources} "
+                    f"sources read (Tier {tier} query)\n"
                     f"⚡ NEXT STEP: Call search_web_page('{target_url}', '<your query>') "
                     f"to extract facts. Do NOT scroll."
                 )
@@ -468,6 +591,9 @@ class WebSearchMixin:
                     + progress_note
                 )
 
+            # ----------------------------------------------------------------
+            # scroll_web_page — SDK → FastAPI → browserless / Redis
+            # ----------------------------------------------------------------
             elif tool_name == "scroll_web_page":
                 target_url = arguments_dict["url"]
                 page_num = arguments_dict["page"]
@@ -530,10 +656,10 @@ class WebSearchMixin:
                     f"\n\n📜 SCROLL BUDGET: {scroll_count}/{SCROLL_LIMIT_PER_URL} scrolls used "
                     f"on this URL ({remaining} remaining).\n"
                     + (
-                        f"⚠️ BUDGET EXHAUSTED after this scroll. "
-                        f"Run search_web_page or get a new URL."
+                        "⚠️ BUDGET EXHAUSTED after this scroll. "
+                        "Run search_web_page or get a new URL."
                         if remaining == 0
-                        else f"Prefer search_web_page over further scrolling unless reading a narrative."
+                        else "Prefer search_web_page over further scrolling unless reading a narrative."
                     )
                 )
 
@@ -542,6 +668,9 @@ class WebSearchMixin:
                     + scroll_budget_note
                 )
 
+            # ----------------------------------------------------------------
+            # search_web_page — SDK → FastAPI → Redis cache
+            # ----------------------------------------------------------------
             elif tool_name == "search_web_page":
                 target_url = arguments_dict["url"]
                 query_val = arguments_dict["query"]
@@ -558,20 +687,27 @@ class WebSearchMixin:
                     query=query_val,
                 )
 
+            # ----------------------------------------------------------------
+            # perform_web_search — SearxNG direct (internal HTTP, no SDK hop)
+            # ----------------------------------------------------------------
             elif tool_name == "perform_web_search":
                 query_val = arguments_dict["query"]
-                yield _status(
-                    run_id, tool_name, f"Querying search engine: '{query_val}'..."
-                )
+                yield _status(run_id, tool_name, f"Querying SearxNG: '{query_val}'...")
 
-                query_str = query_val.replace(" ", "+")
-                raw_serp = await asyncio.to_thread(
-                    self.project_david_client.tools.web_read,
-                    url=f"https://html.duckduckgo.com/html/?q={query_str}",
-                    force_refresh=True,
-                )
+                # Classify tier first so format_for_agent can embed the right
+                # mandatory source count in the agent instructions.
+                session = self._get_or_create_session(run_id, query_val)
+                session["search_performed"] = True
+                query_tier = session.get("query_tier", 1)
+
+                searxng = SearxNGClient()
                 yield _status(run_id, tool_name, "Parsing search results...")
-                final_content = self._parse_serp_results(raw_serp, query_val, run_id)
+
+                final_content = await searxng.format_for_agent(
+                    query=query_val,
+                    count=10,
+                    query_tier=query_tier,
+                )
 
             else:
                 raise ValueError(f"Unknown web tool: {tool_name}")
@@ -658,6 +794,7 @@ class WebSearchMixin:
     # ------------------------------------------------------------------
     # 4. PUBLIC HANDLERS
     # ------------------------------------------------------------------
+
     async def handle_perform_web_search(
         self,
         thread_id: str,
@@ -667,7 +804,7 @@ class WebSearchMixin:
         tool_call_id: Optional[str] = None,
         decision: Optional[Dict] = None,
     ) -> AsyncGenerator[str, None]:
-        """Handler for 'perform_web_search' (Google/DDG Discovery)."""
+        """Handler for 'perform_web_search' — routes to SearxNG directly."""
         async for event in self._execute_web_tool_logic(
             tool_name="perform_web_search",
             required_keys=["query"],
@@ -689,6 +826,7 @@ class WebSearchMixin:
         tool_call_id: Optional[str] = None,
         decision: Optional[Dict] = None,
     ) -> AsyncGenerator[str, None]:
+        """Handler for 'read_web_page' — routes via SDK → browserless."""
         async for event in self._execute_web_tool_logic(
             tool_name="read_web_page",
             required_keys=["url"],
@@ -710,6 +848,7 @@ class WebSearchMixin:
         tool_call_id: Optional[str] = None,
         decision: Optional[Dict] = None,
     ) -> AsyncGenerator[str, None]:
+        """Handler for 'scroll_web_page' — routes via SDK → browserless."""
         async for event in self._execute_web_tool_logic(
             tool_name="scroll_web_page",
             required_keys=["url", "page"],
@@ -731,6 +870,7 @@ class WebSearchMixin:
         tool_call_id: Optional[str] = None,
         decision: Optional[Dict] = None,
     ) -> AsyncGenerator[str, None]:
+        """Handler for 'search_web_page' — routes via SDK → Redis cache."""
         async for event in self._execute_web_tool_logic(
             tool_name="search_web_page",
             required_keys=["url", "query"],
