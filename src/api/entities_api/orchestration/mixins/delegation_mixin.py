@@ -31,7 +31,6 @@ class DelegationMixin:
         self._delete_ephemeral_thread = False
         self._delegation_model = None
         self._research_worker_thread = None
-        self._scratch_pad_thread = None
         self._run_user_id = None
         self._batfish_owner_user_id = None
         self._ephemeral_user_map = None
@@ -326,13 +325,16 @@ class DelegationMixin:
     # ------------------------------------------------------------------
     # HANDLER 1: Research Delegation
     # ------------------------------------------------------------------
-
     async def handle_delegate_research_task(
         self, thread_id, run_id, assistant_id, arguments_dict, tool_call_id, decision
     ) -> AsyncGenerator[str, None]:
 
-        self._scratch_pad_thread = thread_id
         LOG.info(f"🔄 [RESEARCH_DELEGATE] STARTING. Run: {run_id}")
+
+        LOG.info(f"🔄 [RESEARCH_DELEGATE] WORKERS THREAD ID: {thread_id}")
+
+        origin_thread_id = thread_id
+        LOG.info(f"🔄 [RESEARCH_DELEGATE] SCRATCHPAD THREAD ID: {origin_thread_id}")
 
         if isinstance(arguments_dict, str):
             try:
@@ -365,6 +367,26 @@ class DelegationMixin:
         ephemeral_thread = None
 
         try:
+            # ------------------------------------------------------------------
+            # RESOLVE THE SNAPSHOT OWNER (SENIOR's user_id)
+            # run_id here is the SENIOR's run — use the project_david_client to
+            # read the real user_id.
+            # ------------------------------------------------------------------
+            origin_user_id = getattr(self, "_batfish_owner_user_id", None)
+
+            if not origin_user_id:
+                run_obj = await asyncio.to_thread(
+                    self.project_david_client.runs.retrieve_run, run_id=run_id
+                )
+                origin_user_id = run_obj.user_id
+                self._batfish_owner_user_id = origin_user_id
+
+            LOG.info(
+                "RESEARCH_DELEGATE ▸ origin_user_id=%s | origin_thread_id=%s",
+                origin_user_id,
+                origin_thread_id,
+            )
+
             ephemeral_worker = await self.create_ephemeral_worker_assistant()
 
             if not self._research_worker_thread:
@@ -380,9 +402,25 @@ class DelegationMixin:
                 ephemeral_thread.id, prompt, ephemeral_worker.id
             )
 
+            # ------------------------------------------------------------------
+            # STAMP BOTH THE SENIOR's user_id AND thread_id INTO THE WORKER's
+            # RUN METADATA. The fresh server-side worker instance reads both
+            # back on stream start — no other shared state exists between them.
+            # ------------------------------------------------------------------
             ephemeral_run = await self.create_ephemeral_run(
                 ephemeral_worker.id,
                 ephemeral_thread.id,
+                meta_data={
+                    "batfish_owner_user_id": origin_user_id,
+                    "scratch_pad_thread": origin_thread_id,
+                },
+            )
+
+            LOG.info(
+                "RESEARCH_DELEGATE ▸ Stamped meta_data into ephemeral run: "
+                "batfish_owner_user_id=%s | scratch_pad_thread=%s",
+                origin_user_id,
+                origin_thread_id,
             )
 
             yield self._research_status(
@@ -487,246 +525,6 @@ class DelegationMixin:
 
             yield self._research_status(
                 "Delegation complete.",
-                "completed" if not execution_had_error else "error",
-                run_id,
-            )
-
-    # ------------------------------------------------------------------
-    # HANDLER 2: Engineer Delegation
-    # ------------------------------------------------------------------
-
-    async def handle_delegate_engineer_task(
-        self,
-        thread_id,
-        run_id,
-        assistant_id,
-        arguments_dict,
-        tool_call_id,
-        decision,
-    ) -> AsyncGenerator[str, None]:
-
-        self._scratch_pad_thread = thread_id
-        LOG.info(f"🔄 [ENGINEER_DELEGATE] STARTING. Run: {run_id}")
-
-        if isinstance(arguments_dict, str):
-            try:
-                args = json.loads(arguments_dict)
-            except Exception:
-                LOG.warning("⚠️ Failed to parse arguments string as JSON.")
-                args = {}
-        else:
-            args = arguments_dict
-
-        batfish_tool = args.get("batfish_tool")
-        task_context = args.get("task_context", "No context provided.")
-        flag_criteria = args.get("flag_criteria", "None specified.")
-
-        yield self._engineer_status(
-            f"Initializing Junior Engineer for {batfish_tool}...", "in_progress", run_id
-        )
-
-        if not batfish_tool:
-            LOG.error(
-                "❌[ENGINEER_DELEGATE] Senior delegated task with NO Batfish tool."
-            )
-            await self.submit_tool_output(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-                tool_call_id=tool_call_id,
-                content="⚠️ DELEGATION REJECTED: Empty tool. Provide a specific Batfish RCA tool.",
-                action=None,
-                is_error=True,
-            )
-            yield self._engineer_status(
-                "Delegation rejected: Empty tool.", "error", run_id
-            )
-            return
-
-        action = None
-        try:
-            action = await asyncio.to_thread(
-                self.project_david_client.actions.create_action,
-                tool_name="delegate_engineer_task",
-                run_id=run_id,
-                tool_call_id=tool_call_id,
-                function_args=arguments_dict,
-                decision=decision,
-            )
-        except Exception as e:
-            LOG.error(f"❌[ENGINEER_DELEGATE] Action creation failed: {e}")
-
-        ephemeral_junior = None
-        execution_had_error = False
-        ephemeral_run = None
-        ephemeral_thread = None
-
-        try:
-            # ------------------------------------------------------------------
-            # RESOLVE THE SNAPSHOT OWNER (SENIOR's user_id)
-            # run_id here is the SENIOR's run — use the admin client to read
-            # the real user_id since project_david_client returns user_id=None.
-            # ------------------------------------------------------------------
-            origin_user_id = getattr(self, "_batfish_owner_user_id", None)
-
-            run_obj = await asyncio.to_thread(
-                self.project_david_client.runs.retrieve_run, run_id=run_id
-            )
-            origin_user_id = run_obj.user_id
-            self._batfish_owner_user_id = origin_user_id
-
-            LOG.info(
-                "ENGINEER_DELEGATE ▸ Resolved batfish_owner_user_id from Senior run: %s",
-                origin_user_id,
-            )
-            ephemeral_junior = await self.create_ephemeral_junior_engineer()
-            # ------------------------------------------------------------------
-            # FRESH THREAD PER INVOCATION — never reuse stale state
-            # ------------------------------------------------------------------
-            LOG.info("🧵 Creating new ephemeral thread for Junior Engineer...")
-            ephemeral_thread = await asyncio.to_thread(
-                self.project_david_client.threads.create_thread
-            )
-
-            prompt = (
-                f"### INCIDENT ANALYSIS TASK\n\n"
-                f"**TASK CONTEXT:**\n{task_context}\n\n"
-                f"**TOOL TO EXECUTE:**\n`{batfish_tool}`\n\n"
-                f"**FLAG CRITERIA:**\n{flag_criteria}\n\n"
-                f"**CRITICAL INSTRUCTION:**\n"
-                f"1. You MUST execute the `{batfish_tool}` function immediately.\n"
-                f"2. Analyze the returned JSON output against the flag criteria.\n"
-                f"3. Use the `append_scratchpad` tool to log the ✅ [RAW DATA] and any 🚩[FLAG]s.\n"
-                f"4. Once execution is complete, reply with a synthesized summary containing explicit Evidence SNIPS."
-            )
-
-            msg = await self.create_ephemeral_message(
-                ephemeral_thread.id, prompt, ephemeral_junior.id
-            )
-            # ------------------------------------------------------------------
-            # STAMP THE SENIOR's user_id INTO THE JUNIOR's RUN METADATA
-            # The Junior's fresh server-side worker instance has no other way
-            # to know the real snapshot owner — it reads this back on stream start.
-            # ------------------------------------------------------------------
-            ephemeral_run = await self.create_ephemeral_run(
-                ephemeral_junior.id,
-                ephemeral_thread.id,
-                meta_data={"batfish_owner_user_id": origin_user_id},
-            )
-
-            LOG.info(
-                "ENGINEER_DELEGATE ▸ Stamped batfish_owner_user_id=%s into ephemeral run metadata",
-                origin_user_id,
-            )
-
-            yield self._engineer_status(
-                f"Junior Engineer executing {batfish_tool}...", "in_progress", run_id
-            )
-
-            # ------------------------------------------------------------------
-            # STREAM LOOP
-            # ------------------------------------------------------------------
-            max_junior_turns = 5
-            for _ in range(max_junior_turns):
-                async for chunk_event in self._stream_worker_inference(
-                    ephemeral_thread, ephemeral_junior.id, msg, ephemeral_run, run_id
-                ):
-                    yield chunk_event
-
-                junior_run_status = await asyncio.to_thread(
-                    self.project_david_client.runs.retrieve_run, run_id=ephemeral_run.id
-                )
-                status_value = (
-                    junior_run_status.status.value
-                    if hasattr(junior_run_status.status, "value")
-                    else str(junior_run_status.status)
-                )
-
-                if status_value in ("action_required", "requires_action"):
-                    async for tool_chunk in self.process_tool_calls(
-                        thread_id=ephemeral_thread.id,
-                        run_id=ephemeral_run.id,
-                        assistant_id=ephemeral_junior.id,
-                    ):
-                        yield tool_chunk
-                    continue
-
-                break
-
-            yield self._engineer_status(
-                "Junior processing. Waiting for completion...", "in_progress", run_id
-            )
-
-            # ------------------------------------------------------------------
-            # WAIT & FETCH
-            # ------------------------------------------------------------------
-            try:
-                final_run_status = await self._wait_for_run_completion(
-                    run_id=ephemeral_run.id, thread_id=ephemeral_thread.id
-                )
-                LOG.info(
-                    "✅ [ENGINEER_DELEGATE] Junior run completed. Status=%s",
-                    final_run_status,
-                )
-            except asyncio.TimeoutError:
-                LOG.error(
-                    "⏳[ENGINEER_DELEGATE] Junior run timed out. Attempting fetch anyway."
-                )
-                execution_had_error = True
-
-            final_content = await self._fetch_worker_final_report(
-                thread_id=ephemeral_thread.id
-            )
-
-            LOG.critical(
-                "██████[FINAL_THREAD_CONTENT_SUBMITTED_BY_JUNIOR_ENGINEER]=%s ██████",
-                final_content,
-            )
-
-            if not final_content:
-                LOG.critical(
-                    "██████[ENGINEER_DELEGATE_TOTAL_FAILURE] No content generated by the worker ██████"
-                )
-                final_content = "⚠️ Junior Engineer failed to produce a report."
-                execution_had_error = True
-
-            await self.submit_tool_output(
-                thread_id=thread_id,
-                assistant_id=assistant_id,
-                tool_call_id=tool_call_id,
-                content=final_content,
-                action=action,
-                is_error=execution_had_error,
-            )
-
-            if action:
-                await asyncio.to_thread(
-                    self.project_david_client.actions.update_action,
-                    action_id=action.id,
-                    status=(
-                        StatusEnum.completed.value
-                        if not execution_had_error
-                        else StatusEnum.failed.value
-                    ),
-                )
-
-        except Exception as e:
-            execution_had_error = True
-            LOG.error(f"❌[ENGINEER_DELEGATE] Error: {e}", exc_info=True)
-            yield self._engineer_status(f"Error: {str(e)}", "error", run_id)
-
-        finally:
-            if ephemeral_junior:
-                thread_id_to_clean = (
-                    ephemeral_thread.id if ephemeral_thread else "unknown_thread"
-                )
-                await self._ephemeral_clean_up(
-                    ephemeral_junior.id,
-                    thread_id_to_clean,
-                    self._delete_ephemeral_thread,
-                )
-
-            yield self._engineer_status(
-                "Junior Engineer task complete.",
                 "completed" if not execution_had_error else "error",
                 run_id,
             )

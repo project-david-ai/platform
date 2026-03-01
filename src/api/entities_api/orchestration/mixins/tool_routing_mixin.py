@@ -135,6 +135,7 @@ class ToolRoutingMixin:
         thread_id: str,
         run_id: str,
         assistant_id: str,
+        scratch_pad_thread: Optional[str] = None,
         tool_call_id: Optional[str] = None,
         *,
         model: str | None = None,
@@ -145,12 +146,10 @@ class ToolRoutingMixin:
         Orchestrates the execution of a detected batch of tool calls.
         Level 3: Iterates through the batch, propagating IDs for history linking.
         """
+        LOG.info("TOOL-ROUTER ▸ The scratchpad id: %s", scratch_pad_thread)
 
-        # CONFIRMED  - this works
         owner_id = self._batfish_owner_user_id
-
         LOG.info("TOOL-ROUTER ▸ The Real OwnerID: %s", owner_id)
-        # Arguments: ('user_BG5JyzwSLb4dVfDqzJoH8u',)
 
         batch = self.get_function_call_state()
         if not batch:
@@ -180,6 +179,8 @@ class ToolRoutingMixin:
                     "TOOL-ROUTER ▸ Failed to resolve tool name for item in batch."
                 )
                 continue
+
+            LOG.info(f"TOOL-ROUTER ▸ scratchpad thread id: {scratch_pad_thread}")
 
             LOG.info("TOOL-ROUTER ▶ dispatching: %s (ID: %s)", name, current_call_id)
             self._tools_called.append(name)  # ← capture every dispatch in order
@@ -292,6 +293,7 @@ class ToolRoutingMixin:
             elif name == "read_scratchpad":
                 async for chunk in self.handle_read_scratchpad(
                     thread_id=thread_id,
+                    scratch_pad_thread=scratch_pad_thread,
                     run_id=run_id,
                     assistant_id=assistant_id,
                     arguments_dict=args,
@@ -314,6 +316,7 @@ class ToolRoutingMixin:
             elif name == "append_scratchpad":
                 async for chunk in self.handle_append_scratchpad(
                     thread_id=thread_id,
+                    scratch_pad_thread=scratch_pad_thread,
                     run_id=run_id,
                     assistant_id=assistant_id,
                     arguments_dict=args,

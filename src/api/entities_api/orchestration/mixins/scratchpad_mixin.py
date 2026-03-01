@@ -70,9 +70,13 @@ class ScratchpadMixin:
         arguments_dict: Dict[str, Any],
         tool_call_id: str,
         decision: Any,
+        scratch_pad_thread: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
 
-        thread_id = self._scratch_pad_thread
+        if scratch_pad_thread:
+            thread_id = scratch_pad_thread
+
+        LOG.info(f"SCRATCHPAD ▸ scratchpad thread id: {scratch_pad_thread}")
 
         # Injecting assistant_id into the human-readable logs
         # so you can easily track Worker vs Supervisor activity

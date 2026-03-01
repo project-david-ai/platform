@@ -20,7 +20,7 @@ update_assistant = client.assistants.update_assistant(
     decision_telemetry=False,
     web_access=False,
     deep_research=False,
-    engineer=True,
+    engineer=False,
 )
 
 

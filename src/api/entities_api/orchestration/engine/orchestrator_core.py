@@ -95,6 +95,7 @@ class OrchestratorCore(
     ) -> None:
 
         self.is_deep_research = None
+        self._scratch_pad_thread = None
 
         # 1. Setup Redis (Critical for the Mixin fallback)
         self.redis = redis or get_redis_sync()
@@ -460,6 +461,7 @@ class OrchestratorCore(
         - last_error   : written on stream exception or outer exception
         - incomplete_details : written on max-turns failsafe
         """
+        self._scratch_pad_thread = None
 
         _original_assistant_id = assistant_id
 
@@ -584,6 +586,7 @@ class OrchestratorCore(
                 # ------------------------------------------------------------------
                 async for chunk in self.process_tool_calls(
                     thread_id=thread_id,
+                    scratch_pad_thread=self._scratch_pad_thread,
                     run_id=run_id,
                     assistant_id=self.assistant_id,
                     tool_call_id=self._current_tool_call_id,

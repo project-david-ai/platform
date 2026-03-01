@@ -54,6 +54,7 @@ class QwenBaseWorker(
         # ephemeral worker config
         # These objects are used for deep search and engineering flows
         self.is_deep_research = None
+        self._scratch_pad_thread = None
         self._batfish_owner_user_id: str | None = None
         self.is_engineer = None
         self._delete_ephemeral_thread = delete_ephemeral_thread or extra.get(
@@ -269,6 +270,10 @@ class QwenBaseWorker(
             # This is the user who owns the run, thread, and all snapshots.
             # Must be set before _handle_role_based_identity_swap().
             #
+            # CAPTURE REAL SCRATCHPAD THREAD ID — before any identity swap mutates state.
+            # This is the thread that owns the run, thread, and all snapshots.
+            # Must be set before _handle_role_based_identity_swap().
+            #
             # For Junior Engineer runs: the Senior stamps batfish_owner_user_id
             # into the run's meta_data at creation time. We read it back here
             # so the Junior's worker instance uses the correct snapshot owner,
@@ -282,17 +287,22 @@ class QwenBaseWorker(
                 run = await asyncio.to_thread(client.runs.retrieve_run, run_id=run_id)
                 self._run_user_id = run.user_id
 
-                # Check if a parent Senior stamped the real snapshot owner into metadata
-                meta_owner = (run.meta_data or {}).get("batfish_owner_user_id")
+                meta = run.meta_data or {}
+
+                meta_owner = meta.get("batfish_owner_user_id")
+                meta_scratchpad = meta.get("scratch_pad_thread")
 
                 if self._batfish_owner_user_id is None:
                     self._batfish_owner_user_id = meta_owner or run.user_id
 
+                if self._scratch_pad_thread is None and meta_scratchpad:
+                    self._scratch_pad_thread = meta_scratchpad
+
                 LOG.info(
-                    "STREAM ▸ Captured run_user_id=%s | batfish_owner=%s | meta_owner=%s",
+                    "STREAM ▸ Captured run_user_id=%s | batfish_owner=%s | scratch_pad_thread=%s",
                     self._run_user_id,
                     self._batfish_owner_user_id,
-                    meta_owner,
+                    self._scratch_pad_thread,
                 )
             except Exception as e:
                 self._run_user_id = None
