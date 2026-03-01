@@ -8,6 +8,7 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Callable, Dict, Optional
 
+from projectdavid.events import ScratchpadEvent
 from projectdavid_common.utilities.logging_service import LoggingUtility
 from projectdavid_common.validation import StatusEnum
 
@@ -247,6 +248,20 @@ class DelegationMixin:
     async def handle_delegate_research_task(
         self, thread_id, run_id, assistant_id, arguments_dict, tool_call_id, decision
     ) -> AsyncGenerator[str, None]:
+        """
+        Supervisor → Worker research delegation.
+
+        Flow:
+          - Spawns an ephemeral worker assistant on its own thread.
+          - Streams worker content, reasoning, and scratchpad events back
+            through the senior's stream so the backend consumer sees everything
+            in a single unified pipe.
+          - Scratchpad events are intercepted BEFORE the broad attribute guards
+            fire — this is the critical ordering that keeps them from being
+            swallowed silently.
+          - Submits the worker's final report back to the supervisor as a
+            tool output, completing the delegation loop.
+        """
 
         # Capture Senior's thread_id before anything mutates state
         self._scratch_pad_thread = thread_id
@@ -362,6 +377,43 @@ class DelegationMixin:
                 sync_stream.stream_events,
                 model=self._delegation_model,
             ):
+                # ----------------------------------------------------------------
+                # ✅ INTERCEPT: ScratchpadEvent — MUST come before the broad guards.
+                #
+                # ScratchpadEvent carries a 'tool' attribute which causes GUARD 1
+                # below to swallow it silently if we don't intercept first.
+                # We re-emit it onto the senior's stream using the senior's run_id
+                # so the backend consumer routes it correctly through section G2.
+                # The 'origin' field lets the frontend distinguish worker-sourced
+                # scratchpad events from senior-sourced ones if needed.
+                # ----------------------------------------------------------------
+                if isinstance(event, ScratchpadEvent):
+                    LOG.info(
+                        "📋 [DELEGATE] Worker ScratchpadEvent intercepted: "
+                        "op=%s state=%s activity=%s",
+                        event.operation,
+                        event.state,
+                        event.activity,
+                    )
+                    yield json.dumps(
+                        {
+                            "type": "scratchpad_status",
+                            "state": event.state,
+                            "operation": event.operation,
+                            "activity": event.activity,
+                            "tool": event.tool,
+                            "entry": event.entry or event.content or "",
+                            "run_id": run_id,  # ← senior's run_id
+                            "assistant_id": event.assistant_id,
+                            "origin": "research_worker",  # ← source tag for frontend
+                        }
+                    )
+                    continue
+
+                # ----------------------------------------------------------------
+                # 🛑 GUARD 1: Exclude Status / System Events
+                # Comes AFTER ScratchpadEvent check — order is critical.
+                # ----------------------------------------------------------------
                 if (
                     hasattr(event, "tool")
                     or hasattr(event, "status")
@@ -369,6 +421,9 @@ class DelegationMixin:
                 ):
                     continue
 
+                # ----------------------------------------------------------------
+                # 🛑 GUARD 2: Exclude Tool Call Argument Frames
+                # ----------------------------------------------------------------
                 if getattr(event, "tool_calls", None) or getattr(
                     event, "function_call", None
                 ):

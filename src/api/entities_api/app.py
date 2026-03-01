@@ -1,25 +1,18 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from projectdavid_common import UtilsInterface
 from sqlalchemy import text
 
-# DB
 from src.api.entities_api.db.database import engine, wait_for_databases
 from src.api.entities_api.models.models import Base
-# 🔭 Observability
 from src.api.entities_api.observability.tracing import setup_tracing
 from src.api.entities_api.routers import api_router
 
 logging_utility = UtilsInterface.LoggingUtility()
 
-# ─────────────────────────────────────────────────────────────
-# Application startup
-# ─────────────────────────────────────────────────────────────
-
-# 1. Wait for the database(s) to be ready before proceeding.
 wait_for_databases()
 
 
-# 2. Define the app creation factory
 def create_app(init_db: bool = True) -> FastAPI:
     logging_utility.info("Creating FastAPI app")
 
@@ -32,10 +25,18 @@ def create_app(init_db: bool = True) -> FastAPI:
         openapi_url="/openapi.json",
     )
 
-    # 🧠 --- OpenTelemetry MUST be initialised before router binding
+    # 🧠 OTel MUST be initialised before router binding
     setup_tracing(app)
 
-    # Routes
+    # CORS — allows ReDoc/Elements/Swagger to fetch openapi.json cross-origin
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # tighten to specific origins in production
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     app.include_router(api_router, prefix="/v1")
 
     @app.get("/")
@@ -43,7 +44,6 @@ def create_app(init_db: bool = True) -> FastAPI:
         logging_utility.info("Root endpoint accessed")
         return {"message": "Welcome to the API!"}
 
-    # 3. Schema init
     if init_db:
         logging_utility.info("Initializing database schema...")
         Base.metadata.create_all(bind=engine)
@@ -56,5 +56,4 @@ def create_app(init_db: bool = True) -> FastAPI:
     return app
 
 
-# 4. Create the final app instance
 app = create_app()
