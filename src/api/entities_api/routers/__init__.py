@@ -8,10 +8,6 @@ from src.api.entities_api.routers.api_key_router import \
     router as api_key_router
 from src.api.entities_api.routers.assistants_router import \
     router as assistants_router
-from src.api.entities_api.routers.batfish_router import \
-    router as batfish_router
-from src.api.entities_api.routers.engineering_router import \
-    router as the_engineer_router
 from src.api.entities_api.routers.files_router import router as files_router
 from src.api.entities_api.routers.inference_router import \
     router as inference_router
@@ -41,5 +37,3 @@ api_router.include_router(api_key_router, tags=["API Keys"])
 api_router.include_router(admin_router, tags=["Admin"])
 api_router.include_router(tools_router, tags=["Tools: Web Browsing"])
 api_router.include_router(sandbox_auth_router, tags=["Tools: Sandbox Authorization"])
-api_router.include_router(the_engineer_router, tags=["Engineer: Network Engineering"])
-api_router.include_router(batfish_router, tags=["Engineer: Batfish Analysis"])

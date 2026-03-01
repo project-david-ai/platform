@@ -14,8 +14,6 @@ from entities_api.cache.inventory_cache import InventoryCache
 from entities_api.cache.message_cache import MessageCache
 from entities_api.cache.scratchpad_cache import ScratchpadCache
 from entities_api.cache.web_cache import WebSessionCache
-from entities_api.services.batfish_service import BatfishService
-from entities_api.services.inventory_service import InventoryService  # ✅ ADDED
 # --- SERVICE IMPORTS ---
 from entities_api.services.scratchpad_service import ScratchpadService
 from entities_api.services.web_reader import UniversalWebReader
@@ -158,14 +156,3 @@ async def get_scratchpad_service(
     cache: ScratchpadCache = Depends(get_scratchpad_cache),
 ) -> ScratchpadService:
     return ScratchpadService(cache=cache)
-
-
-# ✅ ADDED: Inventory Service Dependency
-async def get_inventory_service(
-    cache: InventoryCache = Depends(get_inventory_cache),
-) -> InventoryService:
-    """
-    Injects the InventoryService for managing network device inventories.
-    Automatically handles the Redis connection via InventoryCache.
-    """
-    return InventoryService(inventory_cache=cache)

@@ -1,8 +1,6 @@
 # src/api/entities_api/orchestration/mixins/__init__.py
 from src.api.entities_api.orchestration.mixins.assistant_cache_mixin import \
     AssistantCacheMixin
-from src.api.entities_api.orchestration.mixins.batfish_mixin import \
-    BatfishMixin
 from src.api.entities_api.orchestration.mixins.client_factory_mixin import \
     ClientFactoryMixin
 from src.api.entities_api.orchestration.mixins.code_execution_mixin import \
@@ -41,7 +39,6 @@ __all__ = [
     "ContextMixin",
     "AssistantCacheMixin",
     "DelegationMixin",
-    "BatfishMixin",
     "ToolRoutingMixin",
     "PlatformToolHandlersMixin",
     "ConsumerToolHandlersMixin",

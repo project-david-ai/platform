@@ -46,7 +46,7 @@
 | `get_vector_store_id_for_assistant`  | Public             | No                       | Public utility method.                                                        |
 | `start_cancellation_listener`          | Public             | No                       | Public method to initiate the background listener.                            |
 | `check_cancellation_flag`              | Public             | No                       | Public method to check the cancellation state.                                |
-| `_process_tool_calls`                  | Correct (`_`)      | Yes                      | Internal logic for handling standard tool calls.                              |
+| `_handover_tool_handling`                  | Correct (`_`)      | Yes                      | Internal logic for handling standard tool calls.                              |
 | `_handle_web_search`                   | Correct (`_`)      | Yes                      | Internal helper for specific tool type.                                       |
 | `_handle_code_interpreter`             | Correct (`_`)      | Yes                      | Internal helper for specific tool type (seems unused, replaced by `handle_...`). |
 | `_handle_vector_search`                | Correct (`_`)      | Yes                      | Internal helper for specific tool type.                                       |
