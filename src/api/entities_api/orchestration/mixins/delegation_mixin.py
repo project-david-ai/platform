@@ -256,9 +256,12 @@ class DelegationMixin:
           - Streams worker content, reasoning, and scratchpad events back
             through the senior's stream so the backend consumer sees everything
             in a single unified pipe.
-          - Scratchpad events are intercepted BEFORE the broad attribute guards
-            fire — this is the critical ordering that keeps them from being
-            swallowed silently.
+          - ScratchpadEvents are intercepted BEFORE the broad attribute guards
+            fire — critical ordering that prevents silent swallowing.
+          - Intercept payload mirrors _scratchpad_status() exactly — only
+            non-None fields are included so the shape is byte-for-byte
+            identical to native supervisor scratchpad events. The only
+            addition is 'origin: research_worker' for frontend source tagging.
           - Submits the worker's final report back to the supervisor as a
             tool output, completing the delegation loop.
         """
@@ -378,14 +381,21 @@ class DelegationMixin:
                 model=self._delegation_model,
             ):
                 # ----------------------------------------------------------------
-                # ✅ INTERCEPT: ScratchpadEvent — MUST come before the broad guards.
+                # ✅ INTERCEPT: ScratchpadEvent
                 #
-                # ScratchpadEvent carries a 'tool' attribute which causes GUARD 1
-                # below to swallow it silently if we don't intercept first.
-                # We re-emit it onto the senior's stream using the senior's run_id
-                # so the backend consumer routes it correctly through section G2.
-                # The 'origin' field lets the frontend distinguish worker-sourced
-                # scratchpad events from senior-sourced ones if needed.
+                # MUST come before GUARD 1 — ScratchpadEvent carries a 'tool'
+                # attribute which causes the guard to swallow it silently.
+                #
+                # Payload mirrors _scratchpad_status() exactly:
+                #   - Only non-None fields are included
+                #   - entry is only set when there is actual content
+                #   - Shape is byte-for-byte identical to native supervisor
+                #     scratchpad events so the backend consumer (section G2)
+                #     and frontend handle both sources identically
+                #
+                # The only addition over a native event is 'origin' which
+                # lets the frontend distinguish worker vs supervisor source
+                # if it ever needs to render them differently.
                 # ----------------------------------------------------------------
                 if isinstance(event, ScratchpadEvent):
                     LOG.info(
@@ -395,19 +405,29 @@ class DelegationMixin:
                         event.state,
                         event.activity,
                     )
-                    yield json.dumps(
-                        {
-                            "type": "scratchpad_status",
-                            "state": event.state,
-                            "operation": event.operation,
-                            "activity": event.activity,
-                            "tool": event.tool,
-                            "entry": event.entry or event.content or "",
-                            "run_id": run_id,  # ← senior's run_id
-                            "assistant_id": event.assistant_id,
-                            "origin": "research_worker",  # ← source tag for frontend
-                        }
-                    )
+
+                    payload = {
+                        "type": "scratchpad_status",
+                        "run_id": run_id,  # ← senior's run_id
+                        "operation": event.operation,
+                        "state": event.state,
+                        "origin": "research_worker",  # ← only field native events lack
+                    }
+
+                    # Mirror _scratchpad_status() — only include non-None fields
+                    if event.tool is not None:
+                        payload["tool"] = event.tool
+                    if event.activity is not None:
+                        payload["activity"] = event.activity
+                    if event.assistant_id is not None:
+                        payload["assistant_id"] = event.assistant_id
+
+                    # Only include entry when there is actual content
+                    entry_val = event.entry or event.content or ""
+                    if entry_val:
+                        payload["entry"] = entry_val
+
+                    yield json.dumps(payload)
                     continue
 
                 # ----------------------------------------------------------------
