@@ -271,13 +271,9 @@ class QwenBaseWorker(
             # Must be set before _handle_role_based_identity_swap().
             #
             # CAPTURE REAL SCRATCHPAD THREAD ID — before any identity swap mutates state.
-            # This is the thread that owns the run, thread, and all snapshots.
-            # Must be set before _handle_role_based_identity_swap().
-            #
-            # For Junior Engineer runs: the Senior stamps batfish_owner_user_id
-            # into the run's meta_data at creation time. We read it back here
-            # so the Junior's worker instance uses the correct snapshot owner,
-            # not its own user_id (which is None for ephemeral runs).
+            # Workers carry scratch_pad_thread in their run meta_data, stamped there
+            # by the supervisor at delegation time. We read it back here so the worker
+            # reads from the supervisor's shared pad rather than its own ephemeral thread.
             # ------------------------------------------------------------------
             from projectdavid import Entity
 
@@ -295,6 +291,8 @@ class QwenBaseWorker(
                 if self._batfish_owner_user_id is None:
                     self._batfish_owner_user_id = meta_owner or run.user_id
 
+                # Only set from meta_data if present — guards against overwriting
+                # a value already resolved on a prior turn.
                 if self._scratch_pad_thread is None and meta_scratchpad:
                     self._scratch_pad_thread = meta_scratchpad
 
@@ -316,9 +314,24 @@ class QwenBaseWorker(
                 requested_model=pre_mapped_model
             )
 
-            # Pin the scratchpad to the current thread so that both the Senior
-            # and any spawned Junior write to the same shared pad.
-            self._scratch_pad_thread = thread_id
+            # ------------------------------------------------------------------
+            # SCRATCHPAD THREAD PINNING
+            #
+            # Priority:
+            #   1. meta_scratchpad from run.meta_data (set above) — used by workers
+            #      so they read/write the supervisor's shared pad, not their own thread.
+            #   2. Falls back to thread_id — used by supervisors and standard assistants
+            #      who own their own scratchpad.
+            #
+            # The guard here is critical — do NOT unconditionally assign thread_id or
+            # workers will lose the supervisor thread resolved from meta_data above.
+            # ------------------------------------------------------------------
+            if not self._scratch_pad_thread:
+                self._scratch_pad_thread = thread_id
+
+            LOG.info(
+                "STREAM ▸ Scratchpad thread pinned to: %s", self._scratch_pad_thread
+            )
 
             # ------------------------------------------------------------------
             # 6. CONTEXT WINDOW CONSTRUCTION

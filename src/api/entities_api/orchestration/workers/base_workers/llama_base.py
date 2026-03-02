@@ -54,6 +54,8 @@ class LlamaBaseWorker(
         # ephemeral worker config
         # These objects are used for deep search and engineering flows
         self.is_deep_research = None
+        self._scratch_pad_thread = None
+        self._batfish_owner_user_id: str | None = None
 
         # --- NEW: Engineer flow tracking variables ---
         self.is_engineer = None
@@ -137,6 +139,7 @@ class LlamaBaseWorker(
         # -----------------------------------
         # Ephemeral supervisor
         # -----------------------------------
+        self._run_user_id = None
         self.ephemeral_supervisor_id = None
         self._delegation_api_key = api_key
 
@@ -177,14 +180,71 @@ class LlamaBaseWorker(
                 self.is_engineer,
             )
 
+            # ------------------------------------------------------------------
+            # CAPTURE REAL USER ID — before any identity swap mutates state.
+            # This is the user who owns the run, thread, and all snapshots.
+            # Must be set before _handle_role_based_identity_swap().
+            #
+            # CAPTURE REAL SCRATCHPAD THREAD ID — before any identity swap mutates state.
+            # Workers carry scratch_pad_thread in their run meta_data, stamped there
+            # by the supervisor at delegation time. We read it back here so the worker
+            # reads from the supervisor's shared pad rather than its own ephemeral thread.
+            # ------------------------------------------------------------------
+            from projectdavid import Entity
+
+            client = Entity(api_key=os.environ.get("ADMIN_API_KEY"))
+
+            try:
+                run = await asyncio.to_thread(client.runs.retrieve_run, run_id=run_id)
+                self._run_user_id = run.user_id
+
+                meta = run.meta_data or {}
+
+                meta_owner = meta.get("batfish_owner_user_id")
+                meta_scratchpad = meta.get("scratch_pad_thread")
+
+                if self._batfish_owner_user_id is None:
+                    self._batfish_owner_user_id = meta_owner or run.user_id
+
+                # Only set from meta_data if present — guards against overwriting
+                # a value already resolved on a prior turn.
+                if self._scratch_pad_thread is None and meta_scratchpad:
+                    self._scratch_pad_thread = meta_scratchpad
+
+                LOG.info(
+                    "STREAM ▸ Captured run_user_id=%s | batfish_owner=%s | scratch_pad_thread=%s",
+                    self._run_user_id,
+                    self._batfish_owner_user_id,
+                    self._scratch_pad_thread,
+                )
+            except Exception as e:
+                self._run_user_id = None
+                LOG.warning("STREAM ▸ Could not resolve run_user_id: %s", e)
+
             # C. Execute Identity Swap (Refactored for Generalized Roles)
             # This handles the supervisor creation, ID swapping, and config reloading
             await self._handle_role_based_identity_swap(
                 requested_model=pre_mapped_model
             )
 
-            # --- [FIX 1] Scratchpad Thread Binding ---
-            self._scratch_pad_thread = thread_id
+            # ------------------------------------------------------------------
+            # SCRATCHPAD THREAD PINNING
+            #
+            # Priority:
+            #   1. meta_scratchpad from run.meta_data (set above) — used by workers
+            #      so they read/write the supervisor's shared pad, not their own thread.
+            #   2. Falls back to thread_id — used by supervisors and standard assistants
+            #      who own their own scratchpad.
+            #
+            # The guard here is critical — do NOT unconditionally assign thread_id or
+            # workers will lose the supervisor thread resolved from meta_data above.
+            # ------------------------------------------------------------------
+            if not self._scratch_pad_thread:
+                self._scratch_pad_thread = thread_id
+
+            LOG.info(
+                "STREAM ▸ Scratchpad thread pinned to: %s", self._scratch_pad_thread
+            )
 
             agent_mode_setting = self.assistant_config.get("agent_mode", False)
             decision_telemetry = self.assistant_config.get("decision_telemetry", True)
@@ -198,9 +258,10 @@ class LlamaBaseWorker(
                 "is_research_worker", False
             )
             raw_meta = self.assistant_config.get("meta_data", {})
-            junior_engineer_setting = (
-                str(raw_meta.get("junior_engineer_calling", False)).lower() == "true"
+            is_junior_val = raw_meta.get(
+                "junior_engineer", raw_meta.get("junior_engineer_calling", False)
             )
+            junior_engineer_setting = str(is_junior_val).lower() == "true"
 
             # 3. CONFLICT RESOLUTION:
             if self.is_engineer:
@@ -331,7 +392,7 @@ class LlamaBaseWorker(
                 self._tool_queue = tool_calls_batch
                 final_status = StatusEnum.pending_action.value
                 LOG.info(
-                    f"🚀 [L3 NATIVE MODE] Turn 1 Batch size: {len(tool_calls_batch)}"
+                    f"🚀[L3 NATIVE MODE] Turn 1 Batch size: {len(tool_calls_batch)}"
                 )
 
             if message_to_save:
@@ -361,19 +422,3 @@ class LlamaBaseWorker(
         finally:
             # 1. Ensure cancellation monitor is stopped
             stop_event.set()
-
-            # 2. Ephemeral Assistant Cleanup
-            if self.ephemeral_supervisor_id:
-                self.assistant_config = {}
-                await self._ensure_config_loaded()
-                await self._ephemeral_clean_up(
-                    assistant_id=self.ephemeral_supervisor_id,
-                    thread_id=thread_id,
-                    delete_thread=False,
-                )
-
-            # --- [FIX] Restore original assistant identity AFTER cleanup & persistence ---
-            self.assistant_id = _original_assistant_id
-
-            # --- [FIX] Nullify ephemeral ID ---
-            self.ephemeral_supervisor_id = None

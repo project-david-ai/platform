@@ -209,37 +209,124 @@ class DelegationMixin:
             **({"meta_data": meta_data} if meta_data else {}),
         )
 
-    async def _fetch_worker_final_report(self, thread_id: str) -> str | None:
-        try:
-            messages = await asyncio.to_thread(
-                self.project_david_client.messages.get_formatted_messages,
-                thread_id=thread_id,
-            )
-            if not messages:
-                LOG.warning(f"[{thread_id}] No messages found in thread.")
-                return None
-            for msg in reversed(messages):
-                role = msg.get("role")
-                content = msg.get("content")
-                tool_calls = msg.get("tool_calls")
-                if role != "assistant":
-                    continue
-                if tool_calls:
-                    continue
-                if not isinstance(content, str) or not content.strip():
-                    continue
-                final_text = content.strip()
-                LOG.info(
-                    "✅ [WORKER_FINAL_REPORT] Found report (length=%d): %s...",
-                    len(final_text),
-                    final_text[:100],
+    async def _fetch_worker_final_report(
+        self,
+        thread_id: str,
+        max_attempts: int = 5,
+        retry_delay: float = 3.0,
+    ) -> str | None:
+        """
+        Fetch the worker's final text report from its thread.
+
+        Retry logic is required because the worker run reaches status=completed
+        at elapsed=0.0s — before finalize_conversation has committed the final
+        assistant message to the thread. Without retries, the first fetch always
+        races against the write and finds either nothing or only tool-call messages.
+
+        Message filtering:
+          - Skips non-assistant messages (user, tool results)
+          - Skips messages whose content is a JSON array (tool_calls_structure
+            saved by finalize_conversation when the last turn was a tool call)
+          - Returns the first assistant message with clean text content, scanning
+            from newest to oldest
+        """
+        for attempt in range(1, max_attempts + 1):
+            try:
+                messages = await asyncio.to_thread(
+                    self.project_david_client.messages.get_formatted_messages,
+                    thread_id=thread_id,
                 )
-                return final_text
-            LOG.info("ℹ️ [WORKER_FINAL_REPORT] No final text report found yet.")
-            return None
-        except Exception as e:
-            LOG.exception("❌[WORKER_FINAL_REPORT_ERROR] Failed to fetch report: %s", e)
-            return None
+
+                # Diagnostic dump — logs every message so we can see exactly
+                # what the thread contains when the fetch fires.
+                LOG.critical(
+                    "██████ [WORKER_FETCH] attempt=%d thread=%s total_messages=%d ██████",
+                    attempt,
+                    thread_id,
+                    len(messages) if messages else 0,
+                )
+                for i, msg in enumerate(messages or []):
+                    LOG.critical(
+                        "██████ [WORKER_FETCH] msg[%d] role=%s tool_calls=%s content_preview=%s ██████",
+                        i,
+                        msg.get("role"),
+                        bool(msg.get("tool_calls")),
+                        str(msg.get("content", ""))[:120],
+                    )
+
+                if not messages:
+                    LOG.warning(
+                        "[WORKER_FETCH] attempt=%d — no messages in thread %s",
+                        attempt,
+                        thread_id,
+                    )
+                else:
+                    for msg in reversed(messages):
+                        role = msg.get("role")
+                        content = msg.get("content")
+                        tool_calls = msg.get("tool_calls")
+
+                        if role != "assistant":
+                            continue
+
+                        # Skip structural tool-call envelopes saved by
+                        # finalize_conversation when last turn was a tool call.
+                        # These are JSON arrays, not human-readable reports.
+                        if tool_calls:
+                            continue
+
+                        if not isinstance(content, str) or not content.strip():
+                            continue
+
+                        # Guard against finalize_conversation saving the
+                        # tool_calls_structure JSON string as content.
+                        stripped = content.strip()
+                        if stripped.startswith("[") and stripped.endswith("]"):
+                            try:
+                                parsed = json.loads(stripped)
+                                if isinstance(parsed, list) and all(
+                                    isinstance(item, dict) and "type" in item
+                                    for item in parsed
+                                ):
+                                    LOG.info(
+                                        "[WORKER_FETCH] Skipping tool_calls_structure "
+                                        "saved as content string."
+                                    )
+                                    continue
+                            except (json.JSONDecodeError, ValueError):
+                                pass  # Not JSON — treat as real content
+
+                        LOG.info(
+                            "✅ [WORKER_FETCH] attempt=%d found report (length=%d): %s...",
+                            attempt,
+                            len(stripped),
+                            stripped[:100],
+                        )
+                        return stripped
+
+                    LOG.warning(
+                        "[WORKER_FETCH] attempt=%d — no qualifying text message found. "
+                        "Retrying in %.1fs...",
+                        attempt,
+                        retry_delay,
+                    )
+
+            except Exception as e:
+                LOG.exception(
+                    "❌ [WORKER_FETCH] attempt=%d — exception fetching messages: %s",
+                    attempt,
+                    e,
+                )
+
+            if attempt < max_attempts:
+                await asyncio.sleep(retry_delay)
+
+        LOG.critical(
+            "██████ [WORKER_FETCH] EXHAUSTED %d attempts for thread %s — returning None ██████",
+            max_attempts,
+            thread_id,
+        )
+        return None
 
     # ------------------------------------------------------------------
     # HANDLER 1: Research Delegation — RESTORED working structure
@@ -264,6 +351,14 @@ class DelegationMixin:
             addition is 'origin: research_worker' for frontend source tagging.
           - Submits the worker's final report back to the supervisor as a
             tool output, completing the delegation loop.
+
+        Prompt note:
+          The delegation prompt explicitly forbids memory-based answers and
+          mandates tool firing as the first action. This is required because
+          Qwen3-class reasoning models will otherwise think through the task
+          internally, conclude they already know the answer from training
+          weights, and skip all tool calls entirely — producing a one-line
+          confirmation with no verified data and no scratchpad entry.
         """
 
         # Capture Senior's thread_id before anything mutates state
@@ -326,7 +421,39 @@ class DelegationMixin:
             ephemeral_thread = await self.create_ephemeral_thread()
             self._research_worker_thread = ephemeral_thread
 
-            prompt = f"TASK: {args.get('task')}\nREQ: {args.get('requirements')}"
+            # ------------------------------------------------------------------
+            # DELEGATION PROMPT
+            #
+            # The explicit tool-firing mandate is required for Qwen3-class
+            # reasoning models. Without it, the model reasons through the task
+            # internally during its thinking phase, concludes it already knows
+            # the answer from training weights, and skips directly to the Step 5
+            # confirmation — producing no tool calls, no scratchpad entry, and
+            # no verified data. The supervisor then receives an empty report and
+            # re-delegates indefinitely.
+            #
+            # Key constraints enforced here:
+            #   1. Training knowledge is explicitly forbidden as a source.
+            #   2. First action MUST be tool calls — reasoning alone is failure.
+            #   3. append_scratchpad MUST be called before any text reply.
+            #   4. A live URL is required for any ✅ [VERIFIED] entry.
+            # ------------------------------------------------------------------
+            prompt = (
+                f"TASK: {args.get('task')}\n"
+                f"REQ: {args.get('requirements')}\n\n"
+                f"⚠️ MANDATORY EXECUTION RULES — NO EXCEPTIONS:\n"
+                f"1. Your FIRST action MUST be tool calls: fire `read_scratchpad()` "
+                f"AND `perform_web_search()` simultaneously. Do NOT reason first.\n"
+                f"2. Your training knowledge is NOT an acceptable source. "
+                f"Every fact MUST come from a live URL retrieved in this session.\n"
+                f"3. You MUST call `append_scratchpad` with your verified result "
+                f"BEFORE sending any text reply.\n"
+                f"4. A ✅ [VERIFIED] entry requires an exact value AND a live source URL. "
+                f"No URL = no verification = task failure.\n"
+                f"5. Sending a confirmation without having called `append_scratchpad` "
+                f"means you have failed. The supervisor cannot see your text — "
+                f"only the scratchpad."
+            )
 
             msg = await self.create_ephemeral_message(
                 ephemeral_thread.id, prompt, ephemeral_worker.id
